@@ -15,8 +15,11 @@ const IMAGE_EXT = ["jpg", "jpeg", "png", "webp", "heic", "heif", "bmp"];
 const AUDIO_EXT = ["mp3", "wav", "m4a", "aac", "flac", "ogg", "opus"];
 
 let instance = null;
+let loading = null;
 let templateCache = null;
 let progressHandler = null;
+let downloadRatio = 0;
+let downloadCb = null;
 
 export function extOf(name) {
   const m = /\.([a-z0-9]+)$/i.exec(name || "");
@@ -40,7 +43,7 @@ export async function loadTemplate() {
   return templateCache;
 }
 
-async function fetchWasm(onProgress) {
+async function fetchWasm() {
   const url = new URL("../vendor/core/ffmpeg-core.wasm.gz", import.meta.url).href;
   if (typeof DecompressionStream === "undefined") {
     throw new Error("当前浏览器不支持 DecompressionStream，请升级到 iOS 16.4+ / Chrome 80+ 再试");
@@ -57,26 +60,47 @@ async function fetchWasm(onProgress) {
     if (done) break;
     chunks.push(value);
     received += value.length;
-    if (onProgress && total) onProgress(Math.min(1, received / total));
+    if (total) {
+      downloadRatio = Math.min(1, received / total);
+      if (downloadCb) downloadCb(downloadRatio);
+    }
   }
   const gz = new Blob(chunks, { type: "application/gzip" });
   const raw = await new Response(gz.stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
   return URL.createObjectURL(new Blob([raw], { type: "application/wasm" }));
 }
 
-export async function loadFFmpeg(onDownload) {
-  if (instance) return instance;
-  const ffmpeg = new FFmpeg();
-  ffmpeg.on("progress", ({ progress }) => {
-    if (progressHandler) progressHandler(Math.max(0, Math.min(1, progress || 0)));
-  });
-  const wasmURL = await fetchWasm(onDownload);
-  await ffmpeg.load({
-    coreURL: new URL("../vendor/core/ffmpeg-core.js", import.meta.url).href,
-    wasmURL,
-  });
-  instance = ffmpeg;
-  return ffmpeg;
+export function loadFFmpeg(onDownload) {
+  if (instance) return Promise.resolve(instance);
+  if (onDownload) {
+    downloadCb = onDownload;
+    onDownload(downloadRatio);
+  }
+  if (!loading) {
+    loading = (async () => {
+      const ffmpeg = new FFmpeg();
+      ffmpeg.on("progress", ({ progress }) => {
+        if (progressHandler) progressHandler(Math.max(0, Math.min(1, progress || 0)));
+      });
+      const wasmURL = await fetchWasm();
+      await ffmpeg.load({
+        coreURL: new URL("../vendor/core/ffmpeg-core.js", import.meta.url).href,
+        wasmURL,
+      });
+      instance = ffmpeg;
+      downloadRatio = 1;
+      return ffmpeg;
+    })().catch((err) => {
+      loading = null;
+      throw err;
+    });
+  }
+  return loading;
+}
+
+/** 预热：用户选完文件就开始下载编码器，不用等点生成 */
+export function warmup() {
+  loadFFmpeg().catch(() => {});
 }
 
 function probe(file, kind) {
