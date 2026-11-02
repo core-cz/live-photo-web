@@ -3,7 +3,7 @@
 
 import { FFmpeg } from "../vendor/ffmpeg/classes.js";
 import { injectLivePhoto, randomUUID } from "./livephoto.js";
-import { jpegWithUUID } from "./exif.js";
+import { jpegForIos } from "./exif.js";
 import { buildMotionPhoto } from "./motion.js";
 import { makeZip } from "./zip.js";
 import { makeCover } from "./cover.js";
@@ -267,17 +267,26 @@ export async function generate(opts) {
   const uuid = randomUUID();
 
   const mov = injectLivePhoto(clip, template, uuid);
-  const jpg = jpegWithUUID(cover, uuid);
-  const motion = buildMotionPhoto(cover, mov, Math.round(STILL_TIME * 1e6));
+  const jpg = jpegForIos(cover, uuid);
+  // Android 版必须用原始片段：mov 里注入了 mebx 元数据轨，
+  // 真机实测多轨结构会让 OPPO 动图播放器「识别正常但播放失败」。
+  const motion = buildMotionPhoto(cover, clip, Math.round(STILL_TIME * 1e6));
 
   onStage("打包");
   const livp = makeZip([
     { name: "IMG_0001.JPG", data: jpg },
     { name: "IMG_0001.MOV", data: mov },
   ]);
+  // iOS 直装包：iOS 只认「在文件 App 里同时选中同名 JPG + MOV → 存储到照片」，
+  // 不认 .livp。所以主推这个扁平 ZIP，解压后直接双选即可合并成 Live Photo。
+  const iosZip = makeZip([
+    { name: "IMG_0001.JPG", data: jpg },
+    { name: "IMG_0001.MOV", data: mov },
+  ]);
   const bundle = makeZip([
-    { name: "ios/IMG_0001.livp", data: livp },
-    { name: "android/IMG_0001.MP.jpg", data: motion },
+    { name: "IMG_0001.zip", data: iosZip },
+    { name: "IMG_0001.MP.jpg", data: motion },
+    { name: "ios-备用.livp", data: livp },
     { name: "README.txt", data: new TextEncoder().encode(readmeText(kind)) },
   ]);
 
@@ -287,7 +296,7 @@ export async function generate(opts) {
 
   return {
     kind, uuid, info, duration, coverTime,
-    cover, mov, jpg, motion, livp, bundle,
+    cover, mov, jpg, motion, livp, iosZip, bundle,
   };
 }
 
@@ -295,18 +304,30 @@ function readmeText(kind) {
   return `Live Photo Studio 导出说明
 ==========================
 
-iPhone / iPad：
-  1. 下载 ios/IMG_0001.livp
-  2. AirDrop 到手机，或在「文件」App 中打开
-  3. 导入到「照片」，长按应能播放
-  4. 微信发朋友圈时从相册选择这张照片
+【iPhone / iPad】
+  用 IMG_0001.zip 那份，不要用 .livp（iOS 文件 App 导不进 .livp）：
+    1. 下载 IMG_0001.zip
+    2. 打开「文件」App，点 ZIP 解压，得到 IMG_0001.JPG 和 IMG_0001.MOV
+    3. 点右上角「选择」，把这两个文件一起勾上
+    4. 点「分享」→「存储到照片」
+       —— 必须同一次操作里选中两个文件，iOS 靠配对标识符合并成一张实况照片
+    5. 打开「照片」，长按照片应能播放
+    6. 微信发朋友圈时从相册选这张，左下角会有「实况」开关
 
-Android：
-  1. 下载 android/IMG_0001.MP.jpg
-  2. 保存到相册目录（DCIM/Pictures）
-  3. 在系统相册中长按查看动态效果
+  备选：ios-备用.livp 只有在 macOS「照片」App 或 AirDrop 到另一台苹果设备时才有用。
 
-注意：iOS 与 Android 是两套互不兼容的容器，一个文件无法同时被两端识别。
+【Android】
+  用 IMG_0001.MP.jpg：
+    1. 下载后移动到 DCIM/Camera 或 Pictures 目录
+       —— 相册只索引这几个目录，留在 Download 里不会出现
+    2. 打开系统相册，长按照片查看动态效果
+    3. 各厂商差异：OPPO/一加/realme、小米、Google 相册可识别；
+       三星用自家 SEFT 格式，不识别标准 Motion Photo
+
+【共同注意】
+  - iOS 与 Android 是两套互不兼容的容器，一个文件无法被两端同时识别
+  - 微信/QQ 普通传输会重新压缩图片并剥掉全部元数据，务必用「原图」或数据线
+  - 朋友圈实况有时长上限（约 3.9 秒），超了会被转成静态图
 源类型：${kind}
 `;
 }
