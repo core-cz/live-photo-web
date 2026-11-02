@@ -21,7 +21,7 @@
 <main>
   <section class="hero">
     <h1>把任意片段，<br /><em>变成会动的实况照片</em></h1>
-    <p>上传视频、语音或照片，自动裁成 3 秒、抽封面、写入配对元数据，同时输出 iOS 的 <code>.livp</code> 与 Android 的 Motion Photo。</p>
+    <p>上传视频、语音或照片，自动裁成 3 秒、抽封面、写入配对元数据，同时输出 iOS 可导入的配对包与 Android 的 Motion Photo。</p>
   </section>
 
   <div class="grid">
@@ -93,26 +93,26 @@
   <section id="result" class="result" hidden>
     <h2>下载</h2>
     <div class="cards">
-      <a id="dlLivp" class="dl primary" download="IMG_0001.livp">
+      <a id="dlLivp" class="dl primary" download="IMG_0001.zip">
         <strong>iPhone / iPad</strong>
-        <span class="fname">.livp</span>
-        <span class="note">AirDrop 到手机，或在「文件」里打开后存入相册</span>
+        <span class="fname">.zip</span>
+        <span class="note">下载后到「文件」App 解压 → 同时勾选 JPG 和 MOV → 分享 →「存储到照片」</span>
         <span id="sizeLivp" class="size"></span>
       </a>
       <a id="dlMotion" class="dl" download="IMG_0001.MP.jpg">
         <strong>Android</strong>
         <span class="fname">.MP.jpg</span>
-        <span class="note">放进 DCIM，相册里长按照片即可播放</span>
+        <span class="note">下载后移进 DCIM 或 Pictures 目录，相册里长按照片即可播放</span>
         <span id="sizeMotion" class="size"></span>
       </a>
       <a id="dlZip" class="dl" download="live-photo.zip">
         <strong>两个都要</strong>
         <span class="fname">.zip</span>
-        <span class="note">两套文件 + 一份导入说明</span>
+        <span class="note">两套文件 + .livp 备份 + 导入说明</span>
         <span id="sizeZip" class="size"></span>
       </a>
     </div>
-    <p class="warn">iOS 与 Android 是两套互不兼容的容器，一个文件无法同时被两端识别，所以这里给两份。</p>
+    <p class="warn">iOS 与 Android 是两套互不兼容的容器，同一个文件无法被两端同时识别，所以给两份。iPhone 务必用第一张卡片：iOS 只认「文件」App 里<b>同时选中同名 JPG + MOV</b> 再存储到照片，单独的 .livp 是导不进去的。</p>
   </section>
 
   <section class="how">
@@ -120,8 +120,8 @@
     <ol>
       <li>在浏览器里用 ffmpeg.wasm 裁出 3 秒片段，封面帧固定落在第 <b>0.5</b> 秒。</li>
       <li>用 canvas 抓取封面，写入 Apple MakerNote 的 <code>0x0011</code> 与 QuickTime 的 <code>content.identifier</code>，两边共用同一个 UUID。</li>
-      <li>把一条真实 Live Photo 的 <code>still-image-time</code> 元数据轨移植进新视频，再打包成 <code>.livp</code>。</li>
-      <li>Android 侧把 MP4 字节直接追加在 JPEG 尾部，并在 XMP 里声明 Motion Photo 1.0。</li>
+      <li>把一条真实 Live Photo 的 <code>still-image-time</code> 元数据轨移植进新视频，与封面一起打包成 ZIP。</li>
+      <li>Android 侧更麻烦：除了 XMP 声明 Motion Photo 1.0，还要写 <b>MPF 双条目 + GainMap + 16B 填充</b>，这是 ColorOS / 一上唯一认的触发结构；同时 EXIF 的 <code>Make</code> 必须不是 Apple，否则相册会跑去找同名 MOV。</li>
     </ol>
     <p class="warn">所有处理都在你的设备上完成，文件不会上传到任何服务器。首次使用需下载约 10MB 编码器。</p>
   </section>
