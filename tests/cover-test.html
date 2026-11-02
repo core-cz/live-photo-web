@@ -1,0 +1,62 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>cover extraction probe</title>
+<pre id="log">boot…</pre>
+<script type="module">
+const logEl = document.getElementById("log");
+const log = (m) => { logEl.textContent += "\n" + m; console.log(m); };
+
+try {
+  const { FFmpeg } = await import("../assets/vendor/ffmpeg/classes.js");
+  const ffmpeg = new FFmpeg();
+  let tail = [];
+  ffmpeg.on("log", ({ message }) => { tail.push(message); if (tail.length > 40) tail.shift(); });
+
+  await ffmpeg.load({
+    coreURL: new URL("../assets/vendor/core/ffmpeg-core.js", import.meta.url).href,
+    wasmURL: new URL("../assets/vendor/core/ffmpeg-core.wasm", import.meta.url).href,
+  });
+  log("loaded");
+
+  const mp4 = new Uint8Array(await (await fetch("./sample.mp4")).arrayBuffer());
+  await ffmpeg.writeFile("in.mp4", mp4);
+
+  const t0 = performance.now();
+  await ffmpeg.exec(["-hide_banner", "-y", "-ss", "1.0", "-i", "in.mp4", "-t", "3",
+    "-vf", "scale=-2:1080:flags=lanczos,fps=30,setsar=1",
+    "-map", "0:v:0", "-map", "0:a:0?",
+    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p",
+    "-c:a", "aac", "-b:a", "128k", "clip.mov"]);
+  log(`transcoded in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
+
+  const clip = await ffmpeg.readFile("clip.mov");
+  await fetch("http://127.0.0.1:8099/clip.mov", { method: "POST", body: clip });
+  log(`clip saved ${(clip.length / 1024).toFixed(0)} KB`);
+
+  const attempts = [
+    ["A input-seek jpeg", ["-hide_banner", "-y", "-ss", "0.5", "-i", "clip.mov", "-frames:v", "1", "-q:v", "3", "a.jpg"]],
+    ["B output-seek jpeg", ["-hide_banner", "-y", "-i", "clip.mov", "-ss", "0.5", "-frames:v", "1", "-q:v", "3", "b.jpg"]],
+    ["C no-seek png", ["-hide_banner", "-y", "-i", "clip.mov", "-frames:v", "1", "c.png"]],
+    ["D t-flag jpeg", ["-hide_banner", "-y", "-t", "0.6", "-i", "clip.mov", "-frames:v", "1", "-q:v", "3", "d.jpg"]],
+  ];
+
+  for (const [name, args] of attempts) {
+    tail = [];
+    const started = performance.now();
+    try {
+      const p = ffmpeg.exec(args);
+      const res = await Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("timeout 45s")), 45000))]);
+      let size = 0;
+      try { size = (await ffmpeg.readFile(args[args.length - 1])).length; } catch { size = -1; }
+      log(`${name}: code=${res} size=${size} ${((performance.now() - started) / 1000).toFixed(1)}s`);
+    } catch (e) {
+      log(`${name}: FAILED ${e.message}\n  log tail:\n  ${tail.slice(-8).join("\n  ")}`);
+    }
+  }
+  window.__done = true;
+  log("DONE");
+} catch (err) {
+  window.__err = String(err);
+  log("ERROR " + err);
+}
+</script>

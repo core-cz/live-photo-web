@@ -1,0 +1,51 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>pipeline e2e</title>
+<pre id="log">boot…</pre>
+<script type="module">
+const logEl = document.getElementById("log");
+const t0 = performance.now();
+const log = (m) => {
+  const line = `[${((performance.now() - t0) / 1000).toFixed(1)}s] ${m}`;
+  logEl.textContent += "\n" + line;
+  console.log(line);
+};
+
+const SINK = "http://127.0.0.1:8099/";
+const caseName = new URL(location.href).searchParams.get("case") || "video";
+
+async function save(name, data) {
+  await fetch(SINK + name, { method: "POST", body: data });
+  log(`saved ${name} (${(data.length / 1024).toFixed(0)} KB)`);
+}
+
+try {
+  const pipe = await import("../assets/lib/pipeline.js");
+  log("module loaded");
+
+  let file;
+  if (caseName === "image") file = new File([await (await fetch("./sample.jpg")).blob()], "sample.jpg", { type: "image/jpeg" });
+  else if (caseName === "audio") file = new File([await (await fetch("./sample.mp3")).blob()], "sample.mp3", { type: "audio/mpeg" });
+  else file = new File([await (await fetch("./sample.mp4")).blob()], "sample.mp4", { type: "video/mp4" });
+
+  const coverFile = caseName === "audio"
+    ? new File([await (await fetch("./sample.jpg")).blob()], "cover.jpg", { type: "image/jpeg" })
+    : null;
+
+  const res = await pipe.generate({
+    file, coverFile, duration: 3, coverTime: 1.5,
+    onStage: (name, p) => log(`stage: ${name}${p != null ? " " + (p * 100).toFixed(0) + "%" : ""}`),
+  });
+  log(`generated uuid=${res.uuid} kind=${res.kind}`);
+
+  await save(`${caseName}.livp`, res.livp);
+  await save(`${caseName}.MOV`, res.mov);
+  await save(`${caseName}.JPG`, res.jpg);
+  await save(`${caseName}.MP.jpg`, res.motion);
+  window.__done = true;
+  log("DONE");
+} catch (err) {
+  window.__err = String(err && err.stack || err);
+  log("ERROR " + err);
+}
+</script>

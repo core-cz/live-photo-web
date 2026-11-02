@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Live Photo Studio · 网页版实况照片生成器</title>
+<meta name="description" content="在浏览器里把视频、语音、照片转成 iOS 与 Android 都能点开的实况照片。全程本地处理，不上传服务器。" />
+<link rel="stylesheet" href="./assets/style.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='34' fill='none' stroke='%235eead4' stroke-width='8'/><circle cx='50' cy='50' r='10' fill='%235eead4'/></svg>" />
+</head>
+<body>
+
+<header class="top">
+  <a class="brand" href="./">
+    <span class="mark"></span>
+    <span>Live Photo Studio</span>
+  </a>
+  <span class="badge">全程本地处理 · 文件不上传</span>
+</header>
+
+<main>
+  <section class="hero">
+    <h1>把任意片段，<br /><em>变成会动的实况照片</em></h1>
+    <p>上传视频、语音或照片，自动裁成 3 秒、抽封面、写入配对元数据，同时输出 iOS 的 <code>.livp</code> 与 Android 的 Motion Photo。</p>
+  </section>
+
+  <div class="grid">
+    <section class="card panel">
+      <label id="drop" class="drop" for="file">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+        </svg>
+        <strong>拖入文件，或点击选择</strong>
+        <span>MP4 / MOV / JPG / PNG / MP3 / WAV · 建议 200MB 以内</span>
+        <input id="file" type="file" accept="video/*,image/*,audio/*" hidden />
+      </label>
+
+      <div id="meta" class="meta" hidden>
+        <div class="fileline">
+          <span id="fname" class="fname"></span>
+          <button id="reset" class="ghost" type="button">换一个</button>
+        </div>
+        <div id="finfo" class="finfo"></div>
+      </div>
+
+      <div id="coverRow" class="field" hidden>
+        <div class="label">音频封面图 <span class="hint">可选，建议竖图</span></div>
+        <label class="mini-drop" for="coverFile">
+          <span id="coverName">选择一张图</span>
+          <input id="coverFile" type="file" accept="image/*" hidden />
+        </label>
+      </div>
+
+      <div id="timeRow" class="field" hidden>
+        <div class="label">封面时间 <span id="timeValue" class="value">1.5s</span></div>
+        <input id="timeRange" type="range" min="0" max="3" step="0.1" value="1.5" />
+      </div>
+
+      <div class="field">
+        <div class="label">时长 <span class="hint">朋友圈建议不超过 3.9 秒</span></div>
+        <div class="seg" id="duration">
+          <button type="button" data-value="2">2.0s</button>
+          <button type="button" data-value="3" class="on">3.0s</button>
+          <button type="button" data-value="3.9">3.9s</button>
+        </div>
+      </div>
+
+      <button id="go" class="btn" type="button" disabled>生成实况照片</button>
+
+      <div id="progress" class="progress" hidden>
+        <div class="bar"><i id="bar"></i></div>
+        <div class="status"><span id="stage">准备中</span><span id="pct"></span></div>
+      </div>
+
+      <p class="tip" id="tip">第一次点击生成时，需要下载约 10MB 的编码器（之后会缓存在浏览器里）。</p>
+    </section>
+
+    <section class="card preview">
+      <div class="phone">
+        <video id="player" playsinline muted loop hidden></video>
+        <img id="poster" alt="" hidden />
+        <div id="placeholder" class="placeholder">
+          <span>生成后可在这里预览动态效果</span>
+        </div>
+        <span id="liveBadge" class="live" hidden>LIVE</span>
+      </div>
+      <div class="edge">
+        <span id="resLabel">等待生成</span>
+      </div>
+    </section>
+  </div>
+
+  <section id="result" class="result" hidden>
+    <h2>下载</h2>
+    <div class="cards">
+      <a id="dlLivp" class="dl primary" download="IMG_0001.livp">
+        <strong>iPhone / iPad</strong>
+        <span class="fname">.livp</span>
+        <span class="note">AirDrop 到手机，或在「文件」里打开后存入相册</span>
+        <span id="sizeLivp" class="size"></span>
+      </a>
+      <a id="dlMotion" class="dl" download="IMG_0001.MP.jpg">
+        <strong>Android</strong>
+        <span class="fname">.MP.jpg</span>
+        <span class="note">放进 DCIM，相册里长按照片即可播放</span>
+        <span id="sizeMotion" class="size"></span>
+      </a>
+      <a id="dlZip" class="dl" download="live-photo.zip">
+        <strong>两个都要</strong>
+        <span class="fname">.zip</span>
+        <span class="note">两套文件 + 一份导入说明</span>
+        <span id="sizeZip" class="size"></span>
+      </a>
+    </div>
+    <p class="warn">iOS 与 Android 是两套互不兼容的容器，一个文件无法同时被两端识别，所以这里给两份。</p>
+  </section>
+
+  <section class="how">
+    <h2>它是怎么工作的</h2>
+    <ol>
+      <li>在浏览器里用 ffmpeg.wasm 裁出 3 秒片段，封面帧固定落在第 <b>0.5</b> 秒。</li>
+      <li>用 canvas 抓取封面，写入 Apple MakerNote 的 <code>0x0011</code> 与 QuickTime 的 <code>content.identifier</code>，两边共用同一个 UUID。</li>
+      <li>把一条真实 Live Photo 的 <code>still-image-time</code> 元数据轨移植进新视频，再打包成 <code>.livp</code>。</li>
+      <li>Android 侧把 MP4 字节直接追加在 JPEG 尾部，并在 XMP 里声明 Motion Photo 1.0。</li>
+    </ol>
+    <p class="warn">所有处理都在你的设备上完成，文件不会上传到任何服务器。首次使用需下载约 10MB 编码器。</p>
+  </section>
+</main>
+
+<footer>
+  <span>Live Photo Studio · 纯静态，可离线使用</span>
+  <a href="https://github.com/core-cz/live-photo-studio" target="_blank" rel="noreferrer">后端版本 / 源码</a>
+</footer>
+
+<script type="module" src="./assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>loop test</title>
+<pre id="log">boot…</pre>
+<script type="module">
+const el = document.getElementById("log");
+const log = (m) => { el.textContent += "\n" + m; console.log(m); };
+try {
+  const pipe = await import("../assets/lib/pipeline.js");
+  const buf = await (await fetch("./sample.mp4")).arrayBuffer();
+  for (let i = 0; i < 3; i += 1) {
+    const file = new File([buf], "sample.mp4", { type: "video/mp4" });
+    const t = performance.now();
+    const res = await pipe.generate({ file, duration: 3, coverTime: 1.5 + i * 0.2 });
+    log(`round ${i}: ${((performance.now() - t) / 1000).toFixed(1)}s mov=${res.mov.length}`);
+  }
+  window.__done = true;
+  log("DONE");
+} catch (e) {
+  window.__err = String(e && e.stack || e);
+  log("ERROR " + e);
+}
+</script>

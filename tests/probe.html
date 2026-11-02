@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>ffmpeg.wasm probe</title>
+<pre id="log">boot…</pre>
+<script type="module">
+const log = (m) => { document.getElementById("log").textContent += "\n" + m; console.log(m); };
+
+try {
+  const t0 = performance.now();
+  const { FFmpeg } = await import("../assets/vendor/ffmpeg/classes.js");
+  const ffmpeg = new FFmpeg();
+  ffmpeg.on("log", ({ message }) => { if (message.startsWith("  ") === false) console.log("[ff]", message); });
+
+  await ffmpeg.load({
+    coreURL: new URL("../assets/vendor/core/ffmpeg-core.js", import.meta.url).href,
+    wasmURL: new URL("../assets/vendor/core/ffmpeg-core.wasm", import.meta.url).href,
+  });
+  log(`loaded in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
+
+  await ffmpeg.exec(["-hide_banner", "-version"]);
+  log("version ok");
+
+  const t1 = performance.now();
+  await ffmpeg.exec(["-hide_banner", "-f", "lavfi", "-i", "testsrc2=size=720x1280:rate=30:duration=3",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "clip.mov"]);
+  const data = await ffmpeg.readFile("clip.mov");
+  log(`transcode ok: ${(data.length / 1024).toFixed(0)} KB in ${((performance.now() - t1) / 1000).toFixed(1)}s`);
+
+  window.__done = true;
+  log("DONE");
+} catch (err) {
+  window.__err = String(err);
+  log("ERROR " + err);
+}
+</script>
