@@ -50,7 +50,7 @@
 2. **still-image-time 轨道**：从一份真实 Live Photo 里取出的 `trak` 二进制模板，整块搬进新视频的 `moov` 尾部，只修正 `stco` / `tkhd` / `elst`
 3. **UUID 配对**：JPEG 侧手写 Apple MakerNote（`0x0011`），MOV 侧覆盖 `meta` 盒模板里的 36 字节 UUID
 
-## Android 侧的三个硬性要求
+## Android 侧的六个硬性要求
 
 这部分是最容易做错的地方，全部来自真机 A/B 二分实验的结论，而不是文档：
 

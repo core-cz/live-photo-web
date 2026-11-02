@@ -8,6 +8,8 @@ import { buildMotionPhoto } from "./motion.js";
 import { makeZip } from "./zip.js";
 import { makeCover } from "./cover.js";
 
+// 封面落在第 0.5 秒 —— 必须和 metadata_tpl.mov 里 still-image-time 样本的
+// 时间点严格对齐，否则 iOS 长按时定格帧会晚 1 秒。
 export const STILL_TIME = 0.5;
 
 const VIDEO_EXT = ["mp4", "mov", "m4v", "webm", "mkv", "avi", "3gp"];

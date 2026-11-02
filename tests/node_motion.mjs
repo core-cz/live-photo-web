@@ -28,7 +28,4 @@ console.log(run(["-a", "-G1", "-s", "-MPF:all", "/tmp/js_motion.mp.jpg"]));
 console.log("XMP MotionPhoto:", run(["-s3", "-XMP-GCamera:MotionPhoto", "/tmp/js_motion.mp.jpg"]));
 console.log("ItemLength:", run(["-s3", "-XMP-Container:DirectoryItemLength", "/tmp/js_motion.mp.jpg"]));
 
-const d = mp;
-const primary = 0;
-const len = d.length;
-console.log("total:", len);
+console.log("total:", mp.length);
