@@ -1,4 +1,4 @@
-import { detectKind, generate } from "./lib/pipeline.js";
+import { detectKind, generate, warmup } from "./lib/pipeline.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -25,6 +25,8 @@ const placeholder = $("placeholder");
 const liveBadge = $("liveBadge");
 const resLabel = $("resLabel");
 const result = $("result");
+
+let warmTimer = null;
 
 const state = {
   file: null,
@@ -112,6 +114,11 @@ async function pickFile(file) {
     else bits.push(`${info.duration.toFixed(1)} 秒`);
     bits.push(kind === "video" ? "视频" : kind === "image" ? "照片" : "音频");
     finfo.textContent = bits.join(" · ");
+
+    // 选完文件就开始偷偷下载编码器
+    if (!warmTimer) {
+      warmTimer = setTimeout(() => { warmup(); }, 600);
+    }
 
     if (kind === "video") {
       const max = Math.max(0.5, info.duration - 0.5);
