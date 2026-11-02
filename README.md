@@ -54,11 +54,14 @@
 
 这部分是最容易做错的地方，全部来自真机 A/B 二分实验的结论，而不是文档：
 
-1. **MPF 必须是双条目**（`NumberOfImages=2`，Primary + GainMap），并且要有**实体 GainMap 数据**和 **16 字节 0 填充**。只写 XMP 字段在 ColorOS / 一加上永远显示静态图——识别开关根本不在这堆字段上。
-2. **EXIF 的 `Make` 不能是 Apple**。相册看到 `Make="Apple"` 或 Apple MakerNote 会直接走「去找同名 MOV」的配对分支，对内嵌视频视而不见。所以 Android 版和 iOS 版必须是两份不同的 JPEG。
-3. **视频必须是双轨**（视频 + AAC）。带 `mebx` 元数据轨的多轨结构会让 OPPO 播放器「识别正常但播放失败」，所以 Android 版用的是注入 UUID 之前的原始片段。
+这一节的结论全部来自与「剪映 21.8.0 导出产物」的逐字节比对，而不是文档：
 
-视频定位靠「文件尾回退 `Item:Length` 字节」，所以视频必须紧贴 EOF，长度字段错一个字节就废。
+1. **段序固定** `Exif → XMP → JFIF → ICC → MPF`，XMP 紧跟 EXIF，MPF 排在所有 APP 段最后。
+2. **MPF 只有一条 Primary**（`NumberOfImages=1`）。伪造 `NumberOfImages=2 + GainMap` 会让播放器把副本当第二张图，结果是「识别成实况、开关自动打开、一点就播不出来」。
+3. **视频紧贴主图 EOI**，中间零填充、零副本。播放器定位视频有两种算法：「EOF − `Item:Length`」和「扫到主图 EOI 之后」，中间多塞任何字节后者就废。
+4. **EXIF 不写 `Make`／`Model`**。写 `Apple` 会进 iOS 配对分支；写 `Google`/`Pixel` 会让微信把它当 Pixel Motion Photo。剪映真实产物这两个字段是空的。
+5. **ftyp 必须是 isom 版式**（`isom` + `iso2` / `avc1` / `mp41`）。ffmpeg 默认的 `qt  ` 单 brand 头会被部分国产相册当成 QuickTime 直接跳过；重建时同步修正 `stco`/`co64` 偏移。
+6. **视频是单轨**（视频 + AAC）。带 `mebx` 元数据轨的多轨结构会让 OPPO 播放器「识别正常但播放失败」，所以 Android 版用注入 UUID 之前的原始片段。
 
 ## 目录
 
@@ -74,7 +77,7 @@ assets/
 │   ├── box.js          MP4 box 解析
 │   ├── cover.js        canvas 抽封面
 │   ├── exif.js         iOS / Android 两套 EXIF + MakerNote
-│   ├── motion.js       Android Motion Photo（MPF + GainMap）
+│   ├── motion.js       Android Motion Photo（单条目 MPF + ftyp 重建）
 │   └── zip.js          最小 ZIP 打包
 └── vendor/             ffmpeg.wasm（core 以 gzip 存放，加载时用 DecompressionStream 解压）
 ```

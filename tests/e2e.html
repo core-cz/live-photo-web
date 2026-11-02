@@ -38,6 +38,7 @@ try {
   });
   log(`generated uuid=${res.uuid} kind=${res.kind}`);
 
+  await save(`${caseName}.ioszip`, res.iosZip);
   await save(`${caseName}.livp`, res.livp);
   await save(`${caseName}.MOV`, res.mov);
   await save(`${caseName}.JPG`, res.jpg);

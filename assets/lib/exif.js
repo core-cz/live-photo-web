@@ -1,8 +1,11 @@
 // EXIF 构造：iOS 与 Android 两份 profile。
 //
 // iOS    Make="Apple" + Apple MakerNote(tag 0x0011 = UUID)，相册靠 UUID 配对同名 MOV。
-// Android Make="Google"，**绝不能带 Apple 痕迹**——实测相册见到 Make="Apple"
-//         或 Apple MakerNote 会直接走「找同名 MOV」的配对分支，对内嵌视频视而不见。
+// Android **一个 Make/Model 都不写**。这不是省略，是必需：
+//         - 写 "Apple" 会让相册走「找同名 MOV」的配对分支，对内嵌视频视而不见；
+//         - 写 "Google"/"Pixel" 会让微信把它当成 Pixel Motion Photo，
+//           实况开关默认打开，然后去解一段并不存在的 HDR+ 增益图，表现为「播不出来」。
+//         剪映 21.8.0 的真实产物里 IFD0 只有 宽 / 高 / Orientation 三项，照抄。
 //
 // 普通 JPEG 没有 MakerNote，ExifTool 也没法凭空造，所以这里手写整段 TIFF。
 
@@ -138,43 +141,22 @@ export function buildAppleExif(w, h, uuid) {
   ]);
 }
 
+/**
+ * Android 版 EXIF：与剪映产物同构——IFD0 只有宽/高/Orientation，无 Make、无 Model、
+ * 无 ExifIFD、无 UserComment。少即是多，任何一个厂商字段都可能触发别人的识别分支。
+ */
 export function buildAndroidExif(w, h) {
-  const dt = nowString();
-  const exifEntries = [
-    BYTES(0x9000, [...enc.encode("0232")]),
-    ASCII(0x9003, dt),
-    ASCII(0x9004, dt),
-    BYTES(0x9101, [1, 2, 3, 0]),
-    SHORT(0x9209, 0),
-    BYTES(0x9286, [...enc.encode("ASCII\0\0\0oplus_11534336")]),
-    BYTES(0xa000, [...enc.encode("0100")]),
-    SHORT(0xa001, 1),
-    LONG(0xa002, w),
-    LONG(0xa003, h),
+  const ifd0Entries = [
+    LONG(0x0100, w),      // ImageWidth
+    LONG(0x0101, h),      // ImageLength
+    SHORT(0x0112, 1),     // Orientation = 1（像素已按方向烘焙，不需要旋转标记）
   ];
 
-  let ifd0Entries = [
-    ASCII(0x010f, "Google"),                 // ← 必须非 Apple
-    ASCII(0x0110, "Pixel 8 Pro"),
-    SHORT(0x0112, 1),
-    RATIONAL(0x011a, 72),
-    RATIONAL(0x011b, 72),
-    SHORT(0x0128, 2),
-    ASCII(0x0131, "HDR+ 1.0.561262836zd"),
-    ASCII(0x0132, dt),
-    SHORT(0x0213, 1),
-    LONG(0x8769, 0),
-  ];
-
-  let p0 = packIfd(ifd0Entries, 8);
-  const exifStart = 8 + p0.ifd.length + p0.values.length;
-  ifd0Entries = ifd0Entries.map((e) => (e.tag === 0x8769 ? LONG(0x8769, exifStart) : e));
-  p0 = packIfd(ifd0Entries, 8);
-  const p1 = packIfd(exifEntries, exifStart);
+  const p0 = packIfd(ifd0Entries, 8);
 
   return new Uint8Array([
     0x4d, 0x4d, 0x00, 0x2a, ...u32(8),
-    ...p0.ifd, ...p0.values, ...p1.ifd, ...p1.values,
+    ...p0.ifd, ...p0.values,
   ]);
 }
 
@@ -221,6 +203,15 @@ export function lastAppEnd(jpeg) {
   let end = 2;
   for (const s of segments(jpeg)) {
     if (s.marker === 0xe1 || s.marker === 0xe2) end = s.start + s.total;
+  }
+  return end;
+}
+
+/** 最后一个 APPn（含 JFIF 的 APP0 与 ICC 的 APP2）之后的位置。 */
+export function lastAppAnyEnd(jpeg) {
+  let end = 2;
+  for (const s of segments(jpeg)) {
+    if (s.marker >= 0xe0 && s.marker <= 0xef) end = s.start + s.total;
   }
   return end;
 }
@@ -303,6 +294,18 @@ export function jpegForAndroid(jpeg) {
   return withExif(jpeg, buildAndroidExif(w, h));
 }
 
+/** XMP 作为 APP1 紧跟 Exif 段（剪映的段序就是 Exif → XMP → JFIF → ICC → MPF）。 */
+export function insertAppAfterExif(jpeg, payload) {
+  const seg = appSegment(0xe1, payload);
+  let pos = 2;
+  for (const s of segments(jpeg)) {
+    if (isExifApp1(jpeg, s)) { pos = s.start + s.total; break; }
+    pos = s.start + s.total;
+    if (s.marker !== 0xe1) break;
+  }
+  return concat([jpeg.subarray(0, pos), seg, jpeg.subarray(pos)]);
+}
+
 /** XMP 作为 APP1 插在最后一个 APP1/APP2 之后。 */
 export function insertApp1(jpeg, payload) {
   const seg = appSegment(0xe1, payload);
@@ -313,6 +316,6 @@ export function insertApp1(jpeg, payload) {
 /** MPF 作为 APP2 紧跟最后一段。 */
 export function insertApp2(jpeg, payload) {
   const seg = appSegment(0xe2, payload);
-  const pos = lastAppEnd(jpeg);
+  const pos = lastAppAnyEnd(jpeg);
   return concat([jpeg.subarray(0, pos), seg, jpeg.subarray(pos)]);
 }

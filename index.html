@@ -121,7 +121,7 @@
       <li>在浏览器里用 ffmpeg.wasm 裁出 3 秒片段，封面帧固定落在第 <b>0.5</b> 秒。</li>
       <li>用 canvas 抓取封面，写入 Apple MakerNote 的 <code>0x0011</code> 与 QuickTime 的 <code>content.identifier</code>，两边共用同一个 UUID。</li>
       <li>把一条真实 Live Photo 的 <code>still-image-time</code> 元数据轨移植进新视频，与封面一起打包成 ZIP。</li>
-      <li>Android 侧更麻烦：除了 XMP 声明 Motion Photo 1.0，还要写 <b>MPF 双条目 + GainMap + 16B 填充</b>，这是 ColorOS / 一上唯一认的触发结构；同时 EXIF 的 <code>Make</code> 必须不是 Apple，否则相册会跑去找同名 MOV。</li>
+      <li>Android 侧的结构是从<b>剪映真实产物</b>逐字节比对出来的：<code>Exif → XMP → JFIF → ICC → MPF</code> 的段序、单条目 MPF、以及<b>视频紧贴主图 EOI</b>，一个字节都不能差。EXIF 里干脆不写 <code>Make</code>／<code>Model</code>——写了 <code>Apple</code> 会让相册去找同名 MOV，写了 <code>Google</code> 会让微信把实况开关默认打开却播不出来。</li>
     </ol>
     <p class="warn">所有处理都在你的设备上完成，文件不会上传到任何服务器。首次使用需下载约 10MB 编码器。</p>
   </section>
