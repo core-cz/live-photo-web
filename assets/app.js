@@ -245,10 +245,10 @@ go.addEventListener("click", async () => {
 
     resLabel.textContent = `${res.kind === "video" ? "视频" : res.kind === "image" ? "照片" : "音频"} · ${state.duration.toFixed(1)} 秒 · ${res.uuid.slice(0, 8)}`;
 
-    $("dlLivp").href = blobUrl(res.livp, "application/zip");
+    $("dlLivp").href = blobUrl(res.iosZip, "application/zip");
     $("dlMotion").href = blobUrl(res.motion, "image/jpeg");
     $("dlZip").href = blobUrl(res.bundle, "application/zip");
-    $("sizeLivp").textContent = humanSize(res.livp.length);
+    $("sizeLivp").textContent = humanSize(res.iosZip.length);
     $("sizeMotion").textContent = humanSize(res.motion.length);
     $("sizeZip").textContent = humanSize(res.bundle.length);
     result.hidden = false;
