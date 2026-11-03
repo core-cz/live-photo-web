@@ -152,11 +152,14 @@ export function buildAppleExif(w, h, uuid) {
  * 但 **ExifIFD 里的 UserComment 不能删**。它是厂商解析器进「原生动态照片」
  * 分支的钥匙：剪映写含 oplustag 的 JSON，ColorOS 写 oplus_11534336，两者都带 oplus 标记。删掉这一个字段，ColorOS 相册与微信就都认不出来了。
  */
-const OPLUS_USER_COMMENT = `{"oplustag":8388608,"has_cover":"0","product":"live_photo_export","os":"android"}`;
+// 形状照抄剪映：外层 has_cover / oplustag，内层 data 里再带一份 capabilityName。
+// 微信会把这段 UserComment 当 JSON 解析，只看外层 oplustag 不够 ——
+// 它可能顺着 data.oplustag / data.capabilityName 判断「这是不是原厂导出的实况」。
+const OPLUS_USER_COMMENT = `{"data":{"capabilityName":"live_photo_export","effect_id":"live_photo_export","oplustag":8388608,"os":"android","product":"lv","videoParams":{"st":0,"ef":0,"be":0,"tx":0,"mu":0,"ft":0,"te":0,"re":0,"ma":0,"v":0,"me":0,"vs":0,"sp":0}},"has_cover":"0","oplustag":8388608,"source_type":"live_photo_export"}`;
 
 export function buildAndroidExif(w, h) {
   const exifEntries = [
-    SHORT(0x9209, 0),                                              // LightSource
+    SHORT(0x9208, 0),                                              // LightSource
     BYTES(0x9286, [...enc.encode("ASCII\0\0\0"), ...enc.encode(OPLUS_USER_COMMENT)]),
   ];
 
