@@ -50,9 +50,27 @@
 2. **still-image-time 轨道**：从一份真实 Live Photo 里取出的 `trak` 二进制模板，整块搬进新视频的 `moov` 尾部，只修正 `stco` / `tkhd` / `elst`
 3. **UUID 配对**：JPEG 侧手写 Apple MakerNote（`0x0011`），MOV 侧覆盖 `meta` 盒模板里的 36 字节 UUID
 
-## Android 侧的六个硬性要求
+## 三条输入路径
 
-这部分是最容易做错的地方，全部来自真机 A/B 二分实验的结论，而不是文档：
+同一个入口要吃三种完全不同的素材，分开处理才不会互相拖累：
+
+| 输入 | 处理方式 | 音轨 |
+|---|---|---|
+| **已有实况照片**（JPEG 尾部挂 MP4，剪映/手机相册导出） | 解析出文件尾那段 MP4，**原样直通**（`-c:v copy`），封面用原图重编码 | 保留原始 AAC |
+| 视频 / 音频 | 转 H.264，封面落在第 0.5 秒 | 保留；原片无音轨则补静音 AAC |
+| 普通照片 | 缓慢推近（Ken Burns） | **补一条静音 AAC** |
+
+前两条是踩坑踩出来的：
+
+- 只按扩展名判断类型，会把一条 9 秒 HEVC+AAC 的实况照片当成「一张静态图」，
+  重新做 3 秒推镜 —— 结果就是**能识别、但没声音、只播几秒**。所以先找 EOI，
+  再在尾部找 `ftyp`，命中就按视频处理。
+- 剪映导出的实况全是 HEVC，wasm 里解得了但编不动（libx265 单线程编码 6 秒要 4 分钟），
+  而原片本来就是相册和微信都认的规格，所以直接 copy，不重编码。
+- 静态图必须补静音 AAC：剪映的每条实况都是 video+aac 双轨，纯视频容器在微信里
+  经常表现为「图标在、点开不播」。
+
+## Android 侧的七条硬性要求
 
 这一节的结论全部来自与「剪映 21.8.0 导出产物」的逐字节比对，而不是文档：
 
@@ -60,7 +78,7 @@
 2. **MPF 只有一条 Primary**（`NumberOfImages=1`）。伪造 `NumberOfImages=2 + GainMap` 会让播放器把副本当第二张图，结果是「识别成实况、开关自动打开、一点就播不出来」。
 3. **视频紧贴主图 EOI**，中间零填充、零副本。播放器定位视频有两种算法：「EOF − `Item:Length`」和「扫到主图 EOI 之后」，中间多塞任何字节后者就废。
 4. **EXIF 不写 `Make`／`Model`**。写 `Apple` 会进 iOS 配对分支；写 `Google`/`Pixel` 会让微信把它当 Pixel Motion Photo。剪映真实产物这两个字段是空的。
-5. **ftyp 必须是 isom 版式**（`isom` + `iso2` / `avc1` / `mp41`）。ffmpeg 默认的 `qt  ` 单 brand 头会被部分国产相册当成 QuickTime 直接跳过；重建时同步修正 `stco`/`co64` 偏移。
+5. **ftyp 必须是 isom 版式**（`isom` + `iso2` / `<实际编码>` / `mp41`）。HEVC 源就写 `hvc1`，别一律写 `avc1`。ffmpeg 默认的 `qt  ` 单 brand 头会被部分国产相册当成 QuickTime 直接跳过；重建时同步修正 `stco`/`co64` 偏移。
 6. **视频是单轨**（视频 + AAC）。带 `mebx` 元数据轨的多轨结构会让 OPPO 播放器「识别正常但播放失败」，所以 Android 版用注入 UUID 之前的原始片段。
 7. **ExifIFD 里的 `UserComment` 必须保留**，并且要带 `oplus` 标记（剪映写 `{"oplustag":8388608,...}`）。这条是回归验证出来的：一度以为「少即是多」把它删干净，结果 ColorOS 相册和微信双双认不出来。`Make`/`Model` 可以空，`UserComment` 不能。
 
@@ -75,6 +93,7 @@ assets/
 ├── lib/
 │   ├── pipeline.js     转码 → 抽封面 → 写元数据 → 打包
 │   ├── livephoto.js    注入元数据轨 + 写 content.identifier
+│   ├── embedded.js     从实况照片里取出内嵌视频 / 判断音轨
 │   ├── box.js          MP4 box 解析
 │   ├── cover.js        canvas 抽封面
 │   ├── exif.js         iOS / Android 两套 EXIF + MakerNote

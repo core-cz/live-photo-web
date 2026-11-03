@@ -103,7 +103,10 @@ function sampleEntryTag(mp4) {
   let tag = "avc1";
   walkBoxes(mp4, 0, mp4.length, (b) => {
     if (b.type === "stsd") {
-      const four = fourcc(mp4, b.dataOffset + 8);
+      // stsd 是 FullBox：version/flags(4) + entry_count(4)，之后才是第一个 sample entry。
+      // 而 sample entry 自己也是「size(4) + format(4)」，所以 fourcc 在 +12 而不是 +8。
+      // 这里曾经读错一个字段，导致 HEVC 视频也被标成 avc1 brand。
+      const four = fourcc(mp4, b.dataOffset + 12);
       if (["avc1", "avc3", "hvc1", "hev1", "vp09", "av01"].includes(four)) tag = four;
     }
   });

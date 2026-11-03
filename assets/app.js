@@ -1,4 +1,5 @@
 import { detectKind, generate, warmup } from "./lib/pipeline.js";
+import { extractMotionVideo } from "./lib/embedded.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -33,7 +34,7 @@ const state = {
   kind: null,
   info: null,
   cover: null,
-  duration: 3,
+  duration: 0,          // 0 = 全长
   busy: false,
   urls: [],
 };
@@ -106,13 +107,30 @@ async function pickFile(file) {
   setStage("");
 
   try {
-    const info = await probeLocal(file, kind);
+    let info = await probeLocal(file, kind);
+
+    // JPEG 壳里可能挂着一段完整视频：那就是一条现成的实况照片。
+    // 这种情况要按视频处理，而不是重新给静态图做推镜（否则没声音、只剩几秒）。
+    let mode = kind;
+    if (kind === "image") {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const mv = extractMotionVideo(bytes);
+      if (mv) {
+        mode = "motion";
+        const vi = await probeLocal(new File([mv.video], "motion.mp4", { type: "video/mp4" }), "video")
+          .catch(() => null);
+        if (vi && vi.width) info = { ...info, width: vi.width, height: vi.height, duration: vi.duration };
+      }
+    }
+    state.kind = mode;
     state.info = info;
+
     const bits = [humanSize(file.size)];
-    if (kind === "image") bits.push(`${info.width}×${info.height}`);
-    else if (kind === "video") bits.push(`${info.width}×${info.height}`, `${info.duration.toFixed(1)} 秒`);
+    if (mode === "image") bits.push(`${info.width}×${info.height}`);
+    else if (mode === "motion") bits.push(`${info.width}×${info.height}`, `${info.duration.toFixed(1)} 秒`, "自带音轨");
+    else if (mode === "video") bits.push(`${info.width}×${info.height}`, `${info.duration.toFixed(1)} 秒`);
     else bits.push(`${info.duration.toFixed(1)} 秒`);
-    bits.push(kind === "video" ? "视频" : kind === "image" ? "照片" : "音频");
+    bits.push(mode === "video" ? "视频" : mode === "motion" ? "实况照片" : mode === "image" ? "照片" : "音频");
     finfo.textContent = bits.join(" · ");
 
     // 选完文件就开始偷偷下载编码器
@@ -120,7 +138,7 @@ async function pickFile(file) {
       warmTimer = setTimeout(() => { warmup(); }, 600);
     }
 
-    if (kind === "video") {
+    if (mode === "video" || mode === "motion") {
       const max = Math.max(0.5, info.duration - 0.5);
       timeRange.max = String(Math.round(max * 10) / 10);
       timeRange.value = String(Math.min(1.5, max));
@@ -243,7 +261,8 @@ go.addEventListener("click", async () => {
     };
     liveBadge.hidden = false;
 
-    resLabel.textContent = `${res.kind === "video" ? "视频" : res.kind === "image" ? "照片" : "音频"} · ${state.duration.toFixed(1)} 秒 · ${res.uuid.slice(0, 8)}`;
+    const kindLabel = { video: "视频", motion: "实况照片", image: "照片", audio: "音频" }[res.kind] || "素材";
+    resLabel.textContent = `${kindLabel} · ${res.duration.toFixed(1)} 秒${res.audio ? " · 有声音" : " · 静音"} · ${res.uuid.slice(0, 8)}`;
 
     $("dlLivp").href = blobUrl(res.iosZip, "application/zip");
     $("dlMotion").href = blobUrl(res.motion, "image/jpeg");

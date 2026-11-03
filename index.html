@@ -57,11 +57,12 @@
       </div>
 
       <div class="field">
-        <div class="label">时长 <span class="hint">朋友圈建议不超过 3.9 秒</span></div>
+        <div class="label">时长 <span class="hint">朋友圈会截短，聊天/相册不受限</span></div>
         <div class="seg" id="duration">
-          <button type="button" data-value="2">2.0s</button>
-          <button type="button" data-value="3" class="on">3.0s</button>
-          <button type="button" data-value="3.9">3.9s</button>
+          <button type="button" data-value="3">3.0s</button>
+          <button type="button" data-value="5">5.0s</button>
+          <button type="button" data-value="8">8.0s</button>
+          <button type="button" data-value="0" class="on">全长</button>
         </div>
       </div>
 
@@ -118,7 +119,8 @@
   <section class="how">
     <h2>它是怎么工作的</h2>
     <ol>
-      <li>在浏览器里用 ffmpeg.wasm 裁出 3 秒片段，封面帧固定落在第 <b>0.5</b> 秒。</li>
+      <li>拖进来如果本身已经是<b>实况照片</b>（JPEG 文件尾挂着 MP4），会把它内嵌的那段视频<b>原样直通</b>——不重编码、不丢音轨、不截时长。其它素材才走转码。</li>
+      <li>在浏览器里用 ffmpeg.wasm 裁片段，封面帧固定落在第 <b>0.5</b> 秒；静态图会补一条静音 AAC，保证和剪映一样是 video+audio 双轨。</li>
       <li>用 canvas 抓取封面，写入 Apple MakerNote 的 <code>0x0011</code> 与 QuickTime 的 <code>content.identifier</code>，两边共用同一个 UUID。</li>
       <li>把一条真实 Live Photo 的 <code>still-image-time</code> 元数据轨移植进新视频，与封面一起打包成 ZIP。</li>
       <li>Android 侧的结构是从<b>剪映真实产物</b>逐字节比对出来的：<code>Exif → XMP → JFIF → ICC → MPF</code> 的段序、单条目 MPF、以及<b>视频紧贴主图 EOI</b>，一个字节都不能差。EXIF 里干脆不写 <code>Make</code>／<code>Model</code>——写了 <code>Apple</code> 会让相册去找同名 MOV，写了 <code>Google</code> 会让微信把实况开关默认打开却播不出来。</li>
