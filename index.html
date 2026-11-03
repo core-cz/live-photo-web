@@ -126,6 +126,8 @@
       <li>用 canvas 抓取封面，写入 Apple MakerNote 的 <code>0x0011</code> 与 QuickTime 的 <code>content.identifier</code>，两边共用同一个 UUID。</li>
       <li>把一条真实 Live Photo 的 <code>still-image-time</code> 元数据轨移植进新视频，与封面一起打包成 ZIP。</li>
       <li>Android 侧的结构是从<b>剪映真实产物</b>逐字节比对出来的：<code>Exif → XMP → JFIF → ICC → MPF</code> 的段序、单条目 MPF、以及<b>视频紧贴主图 EOI</b>，一个字节都不能差。EXIF 里干脆不写 <code>Make</code>／<code>Model</code>——写了 <code>Apple</code> 会让相册去找同名 MOV，写了 <code>Google</code> 会让微信把实况开关默认打开却播不出来。</li>
+      <li>视频容器里还写回了一段 <b>OPPO 私有元数据</b>（<code>moov → udta → meta → LvMetaInfo / Hw / te_is_reencode</code>）。ffmpeg 重封装会把它换成 33 字节的空壳，微信正是靠这段判断「是不是原厂导出的实况」——少了不掉画质，是直接掉图标。</li>
+      <li>视频短边压到 <b>480</b>（剪映的实况就是 480×852）。超过这个尺寸 ColorOS 会提示「规格较高」并切到降级播放，画面能动但没声音；封面则保持 720 短边、比例与视频严格一致。</li>
     </ol>
     <p class="warn">所有处理都在你的设备上完成，文件不会上传到任何服务器。首次使用需下载约 10MB 编码器。</p>
   </section>
