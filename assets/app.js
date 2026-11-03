@@ -147,9 +147,10 @@ async function refresh() {
 
     if (plan.video && plan.video.kind === "video" && natural > 0.6) {
       timeRow.hidden = false;
-      const max = Math.max(0.5, Math.round((natural - 0.5) * 10) / 10);
+      const max = Math.max(1.5, Math.round((natural - 0.3) * 10) / 10);
       timeRange.max = String(max);
-      timeRange.value = String(Math.min(0.5, max));
+      // 默认 1.5s，和剪映产物的 PresentationTimestampUs 对齐
+      timeRange.value = String(Math.min(1.5, max));
       timeValue.textContent = `${Number(timeRange.value).toFixed(1)}s`;
     }
 
