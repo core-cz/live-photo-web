@@ -142,21 +142,40 @@ export function buildAppleExif(w, h, uuid) {
 }
 
 /**
- * Android 版 EXIF：与剪映产物同构——IFD0 只有宽/高/Orientation，无 Make、无 Model、
- * 无 ExifIFD、无 UserComment。少即是多，任何一个厂商字段都可能触发别人的识别分支。
+ * Android 版 EXIF：与剪映 21.8.0 产物同构。
+ *
+ * IFD0 只有 宽 / 高 / ExifIFD 指针 / Orientation —— **没有 Make、没有 Model**。
+ * 写 "Apple" 会让相册走「找同名 MOV」的配对分支；写 "Google"/"Pixel" 会让微信
+ * 把它当 Pixel Motion Photo，实况开关默认打开却去解一段不存在的增益图。
+ * 剪映的真实产物这两个字段就是空的。
+ *
+ * 但 **ExifIFD 里的 UserComment 不能删**。它是厂商解析器进「原生动态照片」
+ * 分支的钥匙：剪映写含 oplustag 的 JSON，ColorOS 写 oplus_11534336，两者都带 oplus 标记。删掉这一个字段，ColorOS 相册与微信就都认不出来了。
  */
+const OPLUS_USER_COMMENT = `{"oplustag":8388608,"has_cover":"0","product":"live_photo_export","os":"android"}`;
+
 export function buildAndroidExif(w, h) {
-  const ifd0Entries = [
-    LONG(0x0100, w),      // ImageWidth
-    LONG(0x0101, h),      // ImageLength
-    SHORT(0x0112, 1),     // Orientation = 1（像素已按方向烘焙，不需要旋转标记）
+  const exifEntries = [
+    SHORT(0x9209, 0),                                              // LightSource
+    BYTES(0x9286, [...enc.encode("ASCII\0\0\0"), ...enc.encode(OPLUS_USER_COMMENT)]),
   ];
 
-  const p0 = packIfd(ifd0Entries, 8);
+  let ifd0Entries = [
+    LONG(0x0100, w),        // ImageWidth
+    LONG(0x0101, h),        // ImageLength
+    LONG(0x8769, 0),        // ExifIFD 指针，回填
+    SHORT(0x0112, 1),       // Orientation
+  ];
+
+  let p0 = packIfd(ifd0Entries, 8);
+  const exifStart = 8 + p0.ifd.length + p0.values.length;
+  ifd0Entries = ifd0Entries.map((e) => (e.tag === 0x8769 ? LONG(0x8769, exifStart) : e));
+  p0 = packIfd(ifd0Entries, 8);
+  const p1 = packIfd(exifEntries, exifStart);
 
   return new Uint8Array([
     0x4d, 0x4d, 0x00, 0x2a, ...u32(8),
-    ...p0.ifd, ...p0.values,
+    ...p0.ifd, ...p0.values, ...p1.ifd, ...p1.values,
   ]);
 }
 

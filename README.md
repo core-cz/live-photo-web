@@ -62,6 +62,7 @@
 4. **EXIF 不写 `Make`／`Model`**。写 `Apple` 会进 iOS 配对分支；写 `Google`/`Pixel` 会让微信把它当 Pixel Motion Photo。剪映真实产物这两个字段是空的。
 5. **ftyp 必须是 isom 版式**（`isom` + `iso2` / `avc1` / `mp41`）。ffmpeg 默认的 `qt  ` 单 brand 头会被部分国产相册当成 QuickTime 直接跳过；重建时同步修正 `stco`/`co64` 偏移。
 6. **视频是单轨**（视频 + AAC）。带 `mebx` 元数据轨的多轨结构会让 OPPO 播放器「识别正常但播放失败」，所以 Android 版用注入 UUID 之前的原始片段。
+7. **ExifIFD 里的 `UserComment` 必须保留**，并且要带 `oplus` 标记（剪映写 `{"oplustag":8388608,...}`）。这条是回归验证出来的：一度以为「少即是多」把它删干净，结果 ColorOS 相册和微信双双认不出来。`Make`/`Model` 可以空，`UserComment` 不能。
 
 ## 目录
 
