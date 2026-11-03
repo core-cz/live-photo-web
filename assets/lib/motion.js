@@ -128,6 +128,17 @@ export function canonicalFtyp(mp4) {
   const size = u32(mp4, 0);
   if (size < 16 || size > mp4.length) return mp4;
 
+  // 已经是标准版式就一个字节都别动。
+  // 源文件（比如剪映导出的实况照片）在 ftyp 后面还有一个 8 字节 free 盒，
+  // 重写 ftyp 会把 free 吃掉、整体前移 8 字节并改写 stco——
+  // 结构上没错，但和原片不再逐字节一致，微信对这类改动很挑。
+  if (size === 32 && fourcc(mp4, 8) === "isom") {
+    const compat = [fourcc(mp4, 16), fourcc(mp4, 20), fourcc(mp4, 24), fourcc(mp4, 28)];
+    if (compat.includes("isom") && (compat.includes("mp41") || compat.includes("mp42"))) {
+      return mp4;
+    }
+  }
+
   // 紧跟 ftyp 的 8 字节空盒（wide / free）可以直接吃掉
   let consume = 0;
   if (size + 8 <= mp4.length && u32(mp4, size) === 8) {

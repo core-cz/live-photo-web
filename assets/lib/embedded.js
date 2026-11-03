@@ -116,3 +116,22 @@ export function isHeic(u8) {
   const b = String.fromCharCode(u8[8], u8[9], u8[10], u8[11]);
   return ["heic", "heix", "hevc", "hevx", "mif1", "msf1"].includes(b);
 }
+
+/**
+ * 读出源实况照片写在 XMP 里的「定格帧时间戳」。
+ *
+ * 这个值很关键：复用别人的视频时，封面静图对应的是**视频里的第几秒**，
+ * 全靠它。剪映写 1500000（1.5s），我们如果一律按 0.5s 写，
+ * 播放器就会从错误的位置起播，看起来像「格式不对」。
+ */
+export function readMotionTimestamp(u8) {
+  if (u8[0] !== 0xff || u8[1] !== 0xd8) return null;
+  // XMP 是明文，直接在 APP1 里找
+  const head = u8.subarray(0, Math.min(u8.length, 65536));
+  const text = String.fromCharCode.apply(null, head);
+  const m = /MotionPhotoPresentationTimestampUs\s*=\s*"(\d+)"/.exec(text)
+    || /MotionPhotoPresentationTimestampUs>(\d+)</.exec(text);
+  if (!m) return null;
+  const us = Number(m[1]);
+  return Number.isFinite(us) && us >= 0 ? us : null;
+}

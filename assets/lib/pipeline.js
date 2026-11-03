@@ -1,5 +1,10 @@
-// 浏览器端完整流水线：转码 → 抽封面 → 写元数据 → 打包。
+// 浏览器端完整流水线：分类 → 转码/直通 → 抽封面 → 写元数据 → 打包。
 // 不联网、不上传，所有计算都在本机完成。
+//
+// 两个槽位可以混搭：
+//   主素材 = 画面（照片 / 视频 / 实况照片）
+//   副素材 = 声音或动态（语音 / 视频 / 照片）
+// 典型组合：照片 + 语音（给老照片配上亲人的声音）、照片 + 视频、视频 + 语音。
 
 import { FFmpeg } from "../vendor/ffmpeg/classes.js";
 import { injectLivePhoto, randomUUID } from "./livephoto.js";
@@ -7,7 +12,7 @@ import { jpegForIos } from "./exif.js";
 import { buildMotionPhoto } from "./motion.js";
 import { makeZip } from "./zip.js";
 import { makeCover } from "./cover.js";
-import { extractMotionVideo, hasAudioTrack, isHeic } from "./embedded.js";
+import { extractMotionVideo, hasAudioTrack, isHeic, readMotionTimestamp } from "./embedded.js";
 
 // 封面落在第 0.5 秒 —— 必须和 metadata_tpl.mov 里 still-image-time 样本的
 // 时间点严格对齐，否则 iOS 长按时定格帧会晚 1 秒。
@@ -110,48 +115,53 @@ export function warmup() {
   loadFFmpeg().catch(() => {});
 }
 
-function probe(file, kind) {
-  const url = URL.createObjectURL(file);
-  const cleanup = () => URL.revokeObjectURL(url);
-
-  if (kind === "image") {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => {
-        cleanup();
-        resolve({ width: img.naturalWidth, height: img.naturalHeight, duration: 0 });
-      };
-      img.onerror = () => {
-        cleanup();
-        reject(new Error("图片无法解析"));
-      };
-      img.src = url;
-    });
-  }
-
+function probeUrl(url, tag) {
   return new Promise((resolve, reject) => {
-    const el = document.createElement("video");
+    const el = document.createElement(tag);
     el.preload = "metadata";
     el.muted = true;
-    const done = () => {
-      cleanup();
-      resolve({
-        width: el.videoWidth || 0,
-        height: el.videoHeight || 0,
-        duration: Number.isFinite(el.duration) ? el.duration : 0,
-      });
-    };
+    const done = () => resolve({
+      width: el.videoWidth || 0,
+      height: el.videoHeight || 0,
+      duration: Number.isFinite(el.duration) ? el.duration : 0,
+    });
     el.onloadedmetadata = done;
-    el.onerror = () => {
-      cleanup();
-      reject(new Error("媒体无法解析"));
-    };
+    el.onerror = () => reject(new Error("媒体无法解析"));
     el.src = url;
-    setTimeout(() => {
-      cleanup();
-      reject(new Error("读取媒体信息超时"));
-    }, 20000);
+    setTimeout(() => reject(new Error("读取媒体信息超时")), 20000);
   });
+}
+
+async function probeVideo(bytes) {
+  const url = URL.createObjectURL(new Blob([bytes], { type: "video/mp4" }));
+  try {
+    return await probeUrl(url, "video");
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function probeImage(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    return await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight, duration: 0 });
+      img.onerror = () => reject(new Error("图片无法解析"));
+      img.src = url;
+    });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function probeAudio(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    return await probeUrl(url, "audio");
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 function even(n) {
@@ -166,101 +176,145 @@ export function targetSize(width, height, maxShort = 1080) {
 
 const SILENT = "anullsrc=channel_layout=stereo:sample_rate=44100";
 
-async function makeClip(ffmpeg, mode, size, opts, inputName) {
-  const { coverTime, duration, hasCover, audio } = opts;
-  const { w, h } = size;
-
-  // 已有的实况照片：内嵌视频原样直通，不重编码。
-  // 剪映这一类源是 HEVC，wasm 里解得了但编不动（libx265 单线程 encode 6 秒要 4 分钟），
-  // 而原片本来就是相册与微信都认的规格，直接 copy 反而最稳、也最快。
-  if (mode === "motion") {
-    const args = ["-hide_banner", "-y", "-i", inputName];
-    if (!audio) args.push("-f", "lavfi", "-i", SILENT);
-    args.push(
-      "-t", String(duration),
-      "-map", "0:v:0",
-      "-map", audio ? "0:a:0" : "1:a:0",
-      "-c:v", "copy",
-    );
-    if (audio) args.push("-c:a", "copy");
-    else args.push("-c:a", "aac", "-b:a", "96k", "-ac", "2");
-    args.push("clip.mov");
-    await ffmpeg.exec(args);
-    return;
+/**
+ * 把两个槽位分类成「画面来源 / 声音来源 / 封面来源」。
+ * 不碰 ffmpeg，纯字节判断，用来决定后面走哪条路。
+ */
+export async function buildPlan(primary, secondary) {
+  if (!primary) throw new Error("请先选主素材");
+  const bytesA = new Uint8Array(await primary.arrayBuffer());
+  if (isHeic(bytesA)) {
+    throw new Error("这是 HEIC 原图，浏览器解不了。请在相册里先「导出为 JPG」");
   }
 
-  if (mode === "video") {
-    const start = Math.max(0, coverTime - STILL_TIME);
-    const args = [
-      "-hide_banner", "-y",
-      "-ss", start.toFixed(3),
-      "-i", inputName,
-    ];
-    if (!audio) args.push("-f", "lavfi", "-i", SILENT);
-    args.push(
-      "-t", String(duration),
-      "-vf", `scale=${w}:${h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${w}:${h},fps=30,setsar=1`,
-      "-map", "0:v:0",
-      "-map", audio ? "0:a:0" : "1:a:0",
-      "-c:v", "libx264", "-preset", "ultrafast", "-crf", "25", "-pix_fmt", "yuv420p",
-    );
-    if (audio) args.push("-c:a", "aac", "-b:a", "128k", "-ac", "2");
-    else args.push("-c:a", "aac", "-b:a", "96k", "-ac", "2");
+  const kindA = detectKind(primary);
+  if (!kindA) throw new Error("主素材格式不支持");
+
+  let A = { kind: kindA, file: primary, bytes: bytesA };
+  if (kindA === "image") {
+    const mv = extractMotionVideo(bytesA);
+    if (mv) {
+      A = {
+        kind: "motion", file: primary, bytes: bytesA, video: mv.video,
+        tsUs: readMotionTimestamp(bytesA),
+      };
+    }
+  } else if (kindA === "video") {
+    A.video = bytesA;
+  }
+
+  let B = null;
+  if (secondary) {
+    const bytesB = new Uint8Array(await secondary.arrayBuffer());
+    if (isHeic(bytesB)) throw new Error("副素材是 HEIC 原图，请先转成 JPG");
+    const kindB = detectKind(secondary);
+    if (!kindB) throw new Error("副素材格式不支持");
+    B = { kind: kindB, file: secondary, bytes: bytesB };
+    if (kindB === "image") {
+      const mv = extractMotionVideo(bytesB);
+      if (mv) B = { kind: "motion", file: secondary, bytes: bytesB, video: mv.video };
+    } else if (kindB === "video") {
+      B.video = bytesB;
+    }
+  }
+
+  const videoOf = (x) => (x && (x.kind === "video" || x.kind === "motion") ? x : null);
+  const vA = videoOf(A);
+  const vB = videoOf(B);
+
+  // 画面优先取主素材；主素材是静态图时，副素材的视频就是动态来源
+  const video = vA || vB;
+  // 封面优先取主素材的静图；主素材是音频时退到副素材
+  const still = A.kind === "image" ? primary : (B && B.kind === "image" ? secondary : null);
+  // 声音优先取副素材；副素材是另一段视频时，取那段视频的音轨
+  const audioFile = B && B.kind === "audio" ? secondary : null;
+  const audioVideo = !audioFile && vB && vB !== video ? vB : null;
+
+  let videoInfo = null;
+  if (video) {
+    videoInfo = await probeVideo(video.video).catch(() => null);
+    if (!videoInfo || !videoInfo.width) {
+      // 浏览器解不了这个编码（例如 HEVC）：尺寸退回封面，时长保持 0 由调用方兜底
+      const fallback = still ? await probeImage(still) : { width: 0, height: 0, duration: 0 };
+      videoInfo = { ...fallback, duration: videoInfo ? videoInfo.duration : 0 };
+    }
+  }
+  const stillInfo = still ? await probeImage(still) : null;
+  const audioInfo = audioFile ? await probeAudio(audioFile) : null;
+
+  return {
+    A, B, video, videoFromSecondary: !vA && Boolean(vB),
+    audioFile, audioVideo, still,
+    videoInfo, stillInfo, audioInfo,
+    hasOwnAudio: video ? hasAudioTrack(video.video) : false,
+  };
+}
+
+function sourceSize(plan) {
+  if (plan.videoInfo && plan.videoInfo.width) {
+    return targetSize(plan.videoInfo.width, plan.videoInfo.height);
+  }
+  if (plan.stillInfo) return targetSize(plan.stillInfo.width, plan.stillInfo.height);
+  return { w: 1080, h: 1920 };
+}
+
+function naturalDuration(plan) {
+  if (plan.videoInfo && plan.videoInfo.duration) return Math.min(MAX_SECONDS, plan.videoInfo.duration);
+  if (plan.audioInfo && plan.audioInfo.duration) return Math.min(MAX_SECONDS, plan.audioInfo.duration);
+  return 0;
+}
+
+async function makeClip(ffmpeg, plan, size, opts, names) {
+  const { duration, start } = opts;
+  const { w, h } = size;
+  const audioIn = plan.audioFile ? "audio-in" : null;
+
+  // 有画面：主素材或副素材里的视频
+  if (plan.video) {
+    const args = ["-hide_banner", "-y"];
+    if (start > 0.01) args.push("-ss", start.toFixed(3));
+    args.push("-i", names.video);
+    if (audioIn) args.push("-i", audioIn);
+    else if (!plan.hasOwnAudio) args.push("-f", "lavfi", "-i", SILENT);
+
+    args.push("-t", String(duration), "-map", "0:v:0");
+    args.push("-map", audioIn ? "1:a:0" : (plan.hasOwnAudio ? "0:a:0" : "1:a:0"));
+
+    // 画面原样直通：剪映的 HEVC 我们编不动，也没必要编。
+    // 更重要的是 copy 不会改动视频里的 udta/meta，微信对那类改动很敏感。
+    args.push("-c:v", "copy");
+
+    if (audioIn || !plan.hasOwnAudio) {
+      args.push("-c:a", "aac", "-b:a", "128k", "-ac", "2");
+    } else {
+      args.push("-c:a", "copy");
+    }
     args.push("-shortest", "clip.mov");
     await ffmpeg.exec(args);
     return;
   }
 
-  if (mode === "image") {
-    // 静态图没有声音，但**必须补一条静音 AAC**：
-    // 剪映导出的每条实况都是 video+aac 双轨，纯视频容器的实况在微信里
-    // 经常表现为「图标在、点开不播」，补轨后与剪映产物结构一致。
-    const frames = Math.round(duration * 30);
-    await ffmpeg.exec([
-      "-hide_banner", "-y", "-i", inputName,
-      "-f", "lavfi", "-i", SILENT,
-      "-vf", [
-        `scale=${even(w * 1.5)}:-2:flags=lanczos`,
-        `zoompan=z='min(zoom+0.0012,1.16)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=${w}x${h}:fps=30`,
-        "setsar=1",
-      ].join(","),
-      "-frames:v", String(frames),
-      "-map", "0:v:0", "-map", "1:a:0",
-      "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-pix_fmt", "yuv420p",
-      "-c:a", "aac", "-b:a", "96k", "-ac", "2",
-      "-t", String(duration),
-      "-shortest",
-      "clip.mov",
-    ]);
-    return;
-  }
+  // 没有画面：用封面静图做缓慢推近
+  const frames = Math.max(2, Math.round(duration * 30));
+  const args = ["-hide_banner", "-y", "-i", names.still];
+  if (audioIn) args.push("-i", audioIn);
+  else args.push("-f", "lavfi", "-i", SILENT);
 
-  // audio：模糊封面做底 + 波形。没有封面时用深色纯色背景。
-  const wave = `showwaves=s=${w}x${Math.round(h * 0.3)}:mode=cline:draw=full:scale=sqrt:rate=30:colors=0x5eead4[wv]`;
-  const graph = opts.hasCover
-    ? [
-      `[1:v]scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},gblur=sigma=26,drawbox=x=0:y=0:w=iw:h=ih:color=black@0.5:t=fill[bg]`,
-      wave,
-      "[bg][wv]overlay=(W-w)/2:(H-h)/2:shortest=1[v]",
-    ].join(";")
-    : [
-      `color=c=0x0b1220:s=${w}x${h}:r=30:d=${duration}[bg]`,
-      wave,
-      "[bg][wv]overlay=(W-w)/2:(H-h)/2:shortest=1[v]",
-    ].join(";");
-
-  await ffmpeg.exec([
-    "-hide_banner", "-y",
-    "-i", inputName,
-    ...(opts.hasCover ? ["-loop", "1", "-i", "cover-src.jpg"] : []),
-    "-t", String(duration),
-    "-filter_complex", graph,
-    "-map", "[v]", "-map", "0:a:0",
-    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "25", "-pix_fmt", "yuv420p",
+  args.push(
+    "-vf", [
+      `scale=${even(w * 1.5)}:-2:flags=lanczos`,
+      `zoompan=z='min(zoom+0.0012,1.16)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=${w}x${h}:fps=30`,
+      "setsar=1",
+    ].join(","),
+    "-frames:v", String(frames),
+    "-map", "0:v:0", "-map", "1:a:0",
+    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-pix_fmt", "yuv420p",
     "-c:a", "aac", "-b:a", "128k", "-ac", "2",
+    "-t", String(duration),
     "-shortest",
     "clip.mov",
-  ]);
+  );
+  await ffmpeg.exec(args);
 }
 
 export async function readFileBytes(ffmpeg, name) {
@@ -269,98 +323,98 @@ export async function readFileBytes(ffmpeg, name) {
 }
 
 /**
- * @param {{file: File, coverFile?: File|null, duration: number, coverTime: number,
+ * @param {{primary: File, secondary?: File|null, duration?: number, start?: number,
  *          onStage?: (name: string, progress?: number) => void}} opts
- *        duration = 0 表示「全长」
+ *        duration = 0 表示「全长」；start = 封面在片段里的位置（默认 0.5s，即从 0 开始）
  */
 export async function generate(opts) {
-  const { file, coverFile = null, duration: want = 3, coverTime = 1.5, onStage = () => {} } = opts;
-  const kind = detectKind(file);
-  if (!kind) throw new Error("不支持的文件类型");
+  const {
+    primary, secondary = null, duration: want = 0, start = 0,
+    onStage = () => {},
+  } = opts;
 
-  const srcBytes = new Uint8Array(await file.arrayBuffer());
-  if (isHeic(srcBytes)) {
-    throw new Error("这是 HEIC 原图，浏览器解不了。请在相册里先「导出为 JPG」，或直接选视频");
-  }
+  onStage("分析素材", 0);
+  const plan = await buildPlan(primary, secondary);
+  const size = sourceSize(plan);
+  const natural = naturalDuration(plan);
 
-  // 关键分叉：JPEG 壳里可能挂着一段完整视频（剪映/手机实况照片）。
-  // 如果是，就把它当成视频源，而不是当成一张静态图。
-  let mode = kind;
-  let motion = null;
-  if (kind === "image") {
-    motion = extractMotionVideo(srcBytes);
-    if (motion) mode = "motion";
-  }
+  let duration = want > 0 ? (natural ? Math.min(want, natural) : want) : (natural || 3);
+  duration = Math.max(0.6, Math.min(MAX_SECONDS, duration));
 
-  onStage("准备编码器", 0);
-  const ffmpeg = await loadFFmpeg((p) => onStage("下载编码器", p));
-  onStage("准备编码器", 0);
+  // 纯直通：整段实况照片 + 没有换声音 → 一个字节都不碰 ffmpeg。
+  // 这样视频里的 udta/meta、编码参数、音轨全部原封不动，和剪映原件一致。
+  const pure =
+    plan.video && plan.video.kind === "motion" &&
+    !plan.audioFile && !plan.audioVideo &&
+    start <= 0.01 &&
+    duration >= (plan.videoInfo?.duration || 0) - 0.05;
 
-  onStage("读取素材");
-  let info;
-  if (mode === "motion") {
-    const blob = new Blob([motion.video], { type: "video/mp4" });
-    info = await probe(blob, "video").catch(() => ({
-      width: 0, height: 0, duration: 0,
-    }));
-    if (!info.width || !info.height) {
-      const still = await probe(file, "image");
-      info = { ...still, duration: info.duration };
-    }
+  let clip;
+  if (pure) {
+    onStage("复用原始片段", 1);
+    clip = plan.video.video;
   } else {
-    info = await probe(file, kind);
+    onStage("准备编码器", 0);
+    const ffmpeg = await loadFFmpeg((p) => onStage("下载编码器", p));
+    onStage("准备编码器", 0);
+
+    onStage("写入素材");
+    const names = {};
+    if (plan.video) {
+      names.video = plan.video.kind === "motion" ? "motion.mp4" : `video.${extOf(plan.video.file.name) || "mp4"}`;
+      await ffmpeg.writeFile(names.video, plan.video.video);
+    } else {
+      names.still = `still.${extOf(plan.still.name) || "jpg"}`;
+      await ffmpeg.writeFile(names.still, new Uint8Array(await plan.still.arrayBuffer()));
+    }
+    if (plan.audioFile) {
+      await ffmpeg.writeFile("audio-in", new Uint8Array(await plan.audioFile.arrayBuffer()));
+    }
+
+    onStage("转码", 0);
+    progressHandler = (p) => onStage("转码", p);
+    await makeClip(ffmpeg, plan, size, { duration, start }, names);
+    progressHandler = null;
+
+    clip = await readFileBytes(ffmpeg, "clip.mov");
+    for (const name of [names.video, names.still, "audio-in", "clip.mov"]) {
+      if (name) await ffmpeg.deleteFile(name).catch(() => {});
+    }
   }
-
-  const audio = mode === "motion" ? hasAudioTrack(motion.video)
-    : mode === "video" ? hasAudioTrack(srcBytes)
-      : mode === "audio";
-
-  // 用户选「全长」时按素材真实时长封顶
-  const natural = info.duration > 0 ? Math.min(MAX_SECONDS, info.duration) : 0;
-  let duration = want > 0 ? Math.min(want, natural || want) : (natural || 3);
-  duration = Math.max(0.6, duration);
-
-  onStage("写入文件");
-  const inputName = mode === "motion" ? "motion.mp4" : `input.${extOf(file.name) || "bin"}`;
-  await ffmpeg.writeFile(inputName, mode === "motion" ? motion.video : srcBytes);
-  if (kind === "audio" && coverFile) {
-    await ffmpeg.writeFile("cover-src.jpg", new Uint8Array(await coverFile.arrayBuffer()));
-  }
-
-  const size = targetSize(info.width, info.height);
-
-  onStage("转码", 0);
-  progressHandler = (p) => onStage("转码", p);
-  await makeClip(ffmpeg, mode, size, {
-    coverTime, duration, hasCover: Boolean(coverFile), audio,
-  }, inputName);
-  progressHandler = null;
 
   onStage("生成封面");
+  // 封面来源：照片优先；其次是实况照片自带的静图；最后才是从视频里抽帧
+  const stillFromLive = !plan.still && plan.video && plan.video.kind === "motion";
   const cover = await makeCover({
-    kind: mode === "motion" ? "image" : kind,
-    file, coverFile, coverTime, width: size.w, height: size.h,
+    kind: plan.still || stillFromLive ? "image" : "video",
+    file: plan.still || plan.video.file,
+    coverFile: null,
+    coverTime: start + STILL_TIME,
+    width: size.w,
+    height: size.h,
   });
 
   onStage("写入实况元数据");
-  const clip = await readFileBytes(ffmpeg, "clip.mov");
   const template = await loadTemplate();
   const uuid = randomUUID();
 
   const mov = injectLivePhoto(clip, template, uuid);
   const jpg = jpegForIos(cover, uuid);
-  // Android 版必须用原始片段：mov 里注入了 mebx 元数据轨，
-  // 真机实测多轨结构会让 OPPO 动图播放器「识别正常但播放失败」。
-  const motionPhoto = buildMotionPhoto(cover, clip, Math.round(STILL_TIME * 1e6));
+  // Android 版用未注入 mebx 轨的原始片段：多轨结构会让 OPPO 播放器"识别正常但播放失败"
+  // 复用别人的视频时，静图对应视频里的第几秒是原片写好的，必须沿用它，
+  // 否则播放器会从错误位置起播。
+  const srcTs = plan.video && plan.video.tsUs != null ? plan.video.tsUs / 1e6 : null;
+  const stillAt = srcTs != null
+    ? Math.max(0, Math.min(duration, srcTs - start))
+    : STILL_TIME;
+  const motionPhoto = buildMotionPhoto(cover, clip, Math.round(stillAt * 1e6));
 
   onStage("打包");
-  const livp = makeZip([
+  const iosZip = makeZip([
     { name: "IMG_0001.JPG", data: jpg },
     { name: "IMG_0001.MOV", data: mov },
   ]);
-  // iOS 直装包：iOS 只认「在文件 App 里同时选中同名 JPG + MOV → 存储到照片」，
-  // 不认 .livp。所以主推这个扁平 ZIP，解压后直接双选即可合并成 Live Photo。
-  const iosZip = makeZip([
+  const livp = makeZip([
     { name: "IMG_0001.JPG", data: jpg },
     { name: "IMG_0001.MOV", data: mov },
   ]);
@@ -368,24 +422,27 @@ export async function generate(opts) {
     { name: "IMG_0001.zip", data: iosZip },
     { name: "IMG_0001.MP.jpg", data: motionPhoto },
     { name: "ios-备用.livp", data: livp },
-    { name: "README.txt", data: new TextEncoder().encode(readmeText(mode, audio)) },
+    { name: "README.txt", data: new TextEncoder().encode(readmeText(plan)) },
   ]);
 
-  for (const name of ["clip.mov", inputName, "cover-src.jpg"]) {
-    await ffmpeg.deleteFile(name).catch(() => {});
-  }
+  const kindLabel = plan.video
+    ? (plan.video.kind === "motion" ? "motion" : "video")
+    : "image";
 
   return {
-    kind: mode, uuid, info, duration, coverTime, audio,
+    kind: kindLabel, uuid, size, duration, start, stillAt, pure,
+    audio: Boolean(plan.audioFile || plan.hasOwnAudio || plan.audioVideo),
     cover, mov, jpg, motion: motionPhoto, livp, iosZip, bundle,
   };
 }
 
-function readmeText(kind, audio) {
-  const source = kind === "motion" ? "已有实况照片（内嵌视频原样复用）"
-    : kind === "video" ? "视频"
-      : kind === "image" ? "照片（缓慢推近，静音）"
-        : "音频";
+function readmeText(plan) {
+  const visual = plan.video
+    ? (plan.video.kind === "motion" ? "已有的实况照片" : "视频")
+    : "照片（缓慢推近）";
+  const sound = plan.audioFile ? "副素材的音频"
+    : plan.audioVideo ? "副素材视频的音轨"
+      : plan.hasOwnAudio ? "画面自带音轨" : "静音（补空 AAC 轨）";
   return `Live Photo Studio 导出说明
 ==========================
 
@@ -397,23 +454,18 @@ function readmeText(kind, audio) {
     4. 点「分享」→「存储到照片」
        —— 必须同一次操作里选中两个文件，iOS 靠配对标识符合并成一张实况照片
     5. 打开「照片」，长按照片应能播放
-    6. 微信发朋友圈时从相册选这张，左下角会有「实况」开关
-
-  备选：ios-备用.livp 只有在 macOS「照片」App 或 AirDrop 到另一台苹果设备时才有用。
 
 【Android】
   用 IMG_0001.MP.jpg：
     1. 下载后移动到 DCIM/Camera 或 Pictures 目录
        —— 相册只索引这几个目录，留在 Download 里不会出现
     2. 打开系统相册，长按照片查看动态效果
-    3. 各厂商差异：OPPO/一加/realme、小米、Google 相册可识别；
-       三星用自家 SEFT 格式，不识别标准 Motion Photo
 
 【共同注意】
   - iOS 与 Android 是两套互不兼容的容器，一个文件无法被两端同时识别
   - 微信/QQ 普通传输会重新压缩图片并剥掉全部元数据，务必用「原图」或数据线
   - 朋友圈实况有时长上限，超了会被转成静态图；聊天里发不受这个限制
-源类型：${source}
-音轨：${audio ? "有" : "静音（已补空 AAC 轨，保证播放器正常初始化）"}
+画面来源：${visual}
+声音来源：${sound}
 `;
 }

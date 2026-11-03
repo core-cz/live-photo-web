@@ -1,25 +1,26 @@
-import { detectKind, generate, warmup } from "./lib/pipeline.js";
-import { extractMotionVideo } from "./lib/embedded.js";
+import { buildPlan, generate, detectKind, warmup, STILL_TIME } from "./lib/pipeline.js";
 
 const $ = (id) => document.getElementById(id);
 
-const drop = $("drop");
-const fileInput = $("file");
-const meta = $("meta");
-const fname = $("fname");
-const finfo = $("finfo");
+const slotA = $("slotA");
+const slotB = $("slotB");
+const fileA = $("fileA");
+const fileB = $("fileB");
+const pickA = $("pickA");
+const pickB = $("pickB");
+const hintA = $("hintA");
+const hintB = $("hintB");
+const planLine = $("planLine");
 const timeRow = $("timeRow");
 const timeRange = $("timeRange");
 const timeValue = $("timeValue");
-const coverRow = $("coverRow");
-const coverFile = $("coverFile");
-const coverName = $("coverName");
 const go = $("go");
 const progress = $("progress");
 const bar = $("bar");
 const stage = $("stage");
 const pct = $("pct");
 const tip = $("tip");
+const reset = $("reset");
 const player = $("player");
 const poster = $("poster");
 const placeholder = $("placeholder");
@@ -27,17 +28,16 @@ const liveBadge = $("liveBadge");
 const resLabel = $("resLabel");
 const result = $("result");
 
-let warmTimer = null;
-
 const state = {
-  file: null,
-  kind: null,
-  info: null,
-  cover: null,
-  duration: 0,          // 0 = 全长
+  a: null,
+  b: null,
+  plan: null,
+  duration: 0,      // 0 = 全长
   busy: false,
   urls: [],
 };
+
+const KIND_LABEL = { video: "视频", motion: "实况照片", image: "照片", audio: "音频" };
 
 function releaseUrls() {
   for (const u of state.urls) URL.revokeObjectURL(u);
@@ -54,103 +54,6 @@ function humanSize(n) {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function probeLocal(file, kind) {
-  const url = URL.createObjectURL(file);
-  const done = (v) => { URL.revokeObjectURL(url); return v; };
-
-  if (kind === "image") {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(done({ width: img.naturalWidth, height: img.naturalHeight, duration: 0 }));
-      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("图片无法解析")); };
-      img.src = url;
-    });
-  }
-  return new Promise((resolve, reject) => {
-    const v = document.createElement("video");
-    v.preload = "metadata";
-    v.muted = true;
-    v.onloadedmetadata = () => resolve(done({
-      width: v.videoWidth, height: v.videoHeight,
-      duration: Number.isFinite(v.duration) ? v.duration : 0,
-    }));
-    v.onerror = () => { URL.revokeObjectURL(url); reject(new Error("媒体无法解析")); };
-    setTimeout(() => { URL.revokeObjectURL(url); reject(new Error("读取超时")); }, 20000);
-    v.src = url;
-  });
-}
-
-async function pickFile(file) {
-  if (!file) return;
-  const kind = detectKind(file);
-  if (!kind) {
-    setStage("不支持这种文件，试试 MP4 / MOV / JPG / PNG / MP3", true);
-    return;
-  }
-  releaseUrls();
-  state.file = file;
-  state.kind = kind;
-  state.cover = null;
-  coverName.textContent = "选择一张图";
-  player.hidden = true;
-  poster.hidden = true;
-  placeholder.hidden = false;
-  liveBadge.hidden = true;
-  result.hidden = true;
-  resLabel.textContent = "等待生成";
-
-  fname.textContent = file.name;
-  meta.hidden = false;
-  go.disabled = false;
-  setStage("");
-
-  try {
-    let info = await probeLocal(file, kind);
-
-    // JPEG 壳里可能挂着一段完整视频：那就是一条现成的实况照片。
-    // 这种情况要按视频处理，而不是重新给静态图做推镜（否则没声音、只剩几秒）。
-    let mode = kind;
-    if (kind === "image") {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      const mv = extractMotionVideo(bytes);
-      if (mv) {
-        mode = "motion";
-        const vi = await probeLocal(new File([mv.video], "motion.mp4", { type: "video/mp4" }), "video")
-          .catch(() => null);
-        if (vi && vi.width) info = { ...info, width: vi.width, height: vi.height, duration: vi.duration };
-      }
-    }
-    state.kind = mode;
-    state.info = info;
-
-    const bits = [humanSize(file.size)];
-    if (mode === "image") bits.push(`${info.width}×${info.height}`);
-    else if (mode === "motion") bits.push(`${info.width}×${info.height}`, `${info.duration.toFixed(1)} 秒`, "自带音轨");
-    else if (mode === "video") bits.push(`${info.width}×${info.height}`, `${info.duration.toFixed(1)} 秒`);
-    else bits.push(`${info.duration.toFixed(1)} 秒`);
-    bits.push(mode === "video" ? "视频" : mode === "motion" ? "实况照片" : mode === "image" ? "照片" : "音频");
-    finfo.textContent = bits.join(" · ");
-
-    // 选完文件就开始偷偷下载编码器
-    if (!warmTimer) {
-      warmTimer = setTimeout(() => { warmup(); }, 600);
-    }
-
-    if (mode === "video" || mode === "motion") {
-      const max = Math.max(0.5, info.duration - 0.5);
-      timeRange.max = String(Math.round(max * 10) / 10);
-      timeRange.value = String(Math.min(1.5, max));
-      timeValue.textContent = `${Number(timeRange.value).toFixed(1)}s`;
-      timeRow.hidden = false;
-    } else {
-      timeRow.hidden = true;
-    }
-    coverRow.hidden = kind !== "audio";
-  } catch (err) {
-    finfo.textContent = String(err.message || err);
-  }
 }
 
 function setStage(text, isError = false) {
@@ -172,48 +75,138 @@ function setProgress(label, value) {
   pct.textContent = value == null ? "" : `${Math.round(value * 100)}%`;
 }
 
-fileInput.addEventListener("change", () => pickFile(fileInput.files[0]));
+function describePlan(plan) {
+  const parts = [];
+  const passthrough = plan.video && plan.video.kind === "motion" && !plan.videoFromSecondary;
 
-["dragenter", "dragover"].forEach((ev) =>
-  drop.addEventListener(ev, (e) => {
-    e.preventDefault();
-    drop.classList.add("over");
-  }));
+  if (passthrough) {
+    parts.push("画面与声音：<b>原样复用</b>这条实况，不重编码、不丢音轨");
+    if (plan.audioFile) parts.push("声音改为：<b>副素材语音</b>");
+    return parts.join(" · ");
+  }
 
-["dragleave", "drop"].forEach((ev) =>
-  drop.addEventListener(ev, (e) => {
-    e.preventDefault();
-    drop.classList.remove("over");
-  }));
+  if (plan.video) {
+    if (plan.videoFromSecondary) parts.push("画面：<b>副素材视频</b>");
+    else parts.push("画面：<b>主素材视频</b>");
+  } else {
+    parts.push("画面：<b>照片缓慢推近</b>");
+  }
 
-drop.addEventListener("drop", (e) => {
-  const f = e.dataTransfer?.files?.[0];
-  if (f) pickFile(f);
-});
+  if (plan.still) parts.push("封面：<b>照片</b>");
 
-$("reset").addEventListener("click", (e) => {
-  e.preventDefault();
-  fileInput.value = "";
-  coverFile.value = "";
-  state.file = null;
-  state.info = null;
-  meta.hidden = true;
+  if (plan.audioFile) parts.push("声音：<b>副素材语音</b>");
+  else if (plan.audioVideo) parts.push("声音：<b>副素材视频的音轨</b>");
+  else if (plan.video && plan.hasOwnAudio) parts.push("声音：<b>画面自带</b>");
+  else parts.push("声音：<b>静音</b>（补空 AAC 轨）");
+
+  return parts.join(" · ");
+}
+
+async function refresh() {
+  reset.hidden = !state.a && !state.b;
+  planLine.hidden = true;
   timeRow.hidden = true;
-  coverRow.hidden = true;
-  progress.hidden = true;
   go.disabled = true;
+  state.plan = null;
+
+  if (!state.a) {
+    slotA.classList.remove("filled");
+    pickA.textContent = "照片 / 视频 / 实况照片";
+    hintA.textContent = "决定画面和封面";
+    pickB.textContent = "语音 / 视频 / 照片";
+    hintB.textContent = "可选。声音取自这里";
+    slotB.classList.remove("filled");
+    return;
+  }
+
+  try {
+    const plan = await buildPlan(state.a, state.b);
+    state.plan = plan;
+
+    slotA.classList.add("filled");
+    pickA.textContent = state.a.name;
+    hintA.textContent = `${KIND_LABEL[plan.A.kind]} · ${humanSize(state.a.size)}`;
+
+    if (state.b) {
+      slotB.classList.add("filled");
+      pickB.textContent = state.b.name;
+      hintB.textContent = `${KIND_LABEL[plan.B.kind]} · ${humanSize(state.b.size)}`;
+    } else {
+      slotB.classList.remove("filled");
+      pickB.textContent = "语音 / 视频 / 照片";
+      hintB.textContent = "可选。声音取自这里";
+    }
+
+    planLine.innerHTML = describePlan(plan);
+    planLine.hidden = false;
+    go.disabled = false;
+
+    const natural = plan.videoInfo && plan.videoInfo.duration
+      ? plan.videoInfo.duration
+      : (plan.audioInfo && plan.audioInfo.duration ? plan.audioInfo.duration : 0);
+
+    if (plan.video && plan.video.kind === "video" && natural > 0.6) {
+      timeRow.hidden = false;
+      const max = Math.max(0.5, Math.round((natural - 0.5) * 10) / 10);
+      timeRange.max = String(max);
+      timeRange.value = String(Math.min(0.5, max));
+      timeValue.textContent = `${Number(timeRange.value).toFixed(1)}s`;
+    }
+
+    warmup();
+  } catch (err) {
+    planLine.textContent = String(err.message || err);
+    planLine.hidden = false;
+  }
+}
+
+function pick(which, file) {
+  if (!file) return;
+  if (!detectKind(file)) {
+    setStage("不支持这种文件，试试 MP4 / MOV / JPG / PNG / MP3", true);
+    return;
+  }
+  if (which === "a") state.a = file; else state.b = file;
+  result.hidden = true;
+  player.hidden = true;
+  poster.hidden = true;
+  placeholder.hidden = false;
+  liveBadge.hidden = true;
+  setStage("");
+  refresh();
+}
+
+fileA.addEventListener("change", () => pick("a", fileA.files[0]));
+fileB.addEventListener("change", () => pick("b", fileB.files[0]));
+
+function wireDrop(el, which) {
+  ["dragenter", "dragover"].forEach((ev) =>
+    el.addEventListener(ev, (e) => { e.preventDefault(); el.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((ev) =>
+    el.addEventListener(ev, (e) => { e.preventDefault(); el.classList.remove("over"); }));
+  el.addEventListener("drop", (e) => {
+    const f = e.dataTransfer?.files?.[0];
+    if (f) pick(which, f);
+  });
+}
+
+wireDrop(slotA, "a");
+wireDrop(slotB, "b");
+
+reset.addEventListener("click", (e) => {
+  e.preventDefault();
+  fileA.value = "";
+  fileB.value = "";
+  state.a = null;
+  state.b = null;
+  progress.hidden = true;
   result.hidden = true;
   setStage("");
+  refresh();
 });
 
 timeRange.addEventListener("input", () => {
   timeValue.textContent = `${Number(timeRange.value).toFixed(1)}s`;
-});
-
-coverFile.addEventListener("change", () => {
-  const f = coverFile.files[0];
-  state.cover = f || null;
-  coverName.textContent = f ? f.name : "选择一张图";
 });
 
 $("duration").addEventListener("click", (e) => {
@@ -224,7 +217,7 @@ $("duration").addEventListener("click", (e) => {
 });
 
 go.addEventListener("click", async () => {
-  if (state.busy || !state.file) return;
+  if (state.busy || !state.a) return;
   state.busy = true;
   go.disabled = true;
   go.textContent = "生成中…";
@@ -233,18 +226,18 @@ go.addEventListener("click", async () => {
   setProgress("准备中", 0);
 
   try {
+    const start = timeRow.hidden ? 0 : Math.max(0, Number(timeRange.value) - STILL_TIME);
     const res = await generate({
-      file: state.file,
-      coverFile: state.cover,
+      primary: state.a,
+      secondary: state.b,
       duration: state.duration,
-      coverTime: Number(timeRange.value) || 1.5,
+      start,
       onStage: (name, p) => setProgress(name, p),
     });
 
     setProgress("完成", 1);
     setTimeout(() => { progress.hidden = true; }, 800);
 
-    // 预览：封面图垫底，MOV 能播就淡入叠上去
     poster.src = blobUrl(res.cover, "image/jpeg");
     poster.hidden = false;
     placeholder.hidden = true;
@@ -256,13 +249,12 @@ go.addEventListener("click", async () => {
       player.style.opacity = "1";
       player.play().catch(() => {});
     };
-    player.onerror = () => {
-      player.hidden = true;
-    };
+    player.onerror = () => { player.hidden = true; };
     liveBadge.hidden = false;
 
     const kindLabel = { video: "视频", motion: "实况照片", image: "照片", audio: "音频" }[res.kind] || "素材";
-    resLabel.textContent = `${kindLabel} · ${res.duration.toFixed(1)} 秒${res.audio ? " · 有声音" : " · 静音"} · ${res.uuid.slice(0, 8)}`;
+    resLabel.textContent =
+      `${kindLabel} · ${res.duration.toFixed(1)} 秒 · ${res.audio ? "有声音" : "静音"} · ${res.uuid.slice(0, 8)}`;
 
     $("dlLivp").href = blobUrl(res.iosZip, "application/zip");
     $("dlMotion").href = blobUrl(res.motion, "image/jpeg");
@@ -280,7 +272,9 @@ go.addEventListener("click", async () => {
     setStage(String(err.message || err), true);
   } finally {
     state.busy = false;
-    go.disabled = !state.file;
+    go.disabled = !state.a;
     go.textContent = "生成实况照片";
   }
 });
+
+refresh();

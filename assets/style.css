@@ -252,9 +252,11 @@ input[type="range"]::-moz-range-thumb {
 
 .seg {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 8px;
 }
+
+.seg button { min-width: 0; }
 
 .seg button {
   padding: 9px 4px;
@@ -495,4 +497,79 @@ footer a { color: #7c8ba4; }
   main { padding: 18px 16px 32px; }
   .top { padding: 16px 16px 0; }
   .phone { max-height: 320px; }
+}
+
+/* ---- 双素材槽位 ---- */
+.slots {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.drop.slim {
+  position: relative;
+  padding: 26px 12px 18px;
+  gap: 6px;
+  min-width: 0;
+}
+
+.drop.slim svg { width: 22px; height: 22px; }
+
+.slot-tag {
+  position: absolute;
+  top: 9px;
+  left: 11px;
+  font-size: 10.5px;
+  letter-spacing: 0.05em;
+  color: var(--dim);
+}
+
+.slot-tag.alt { color: #7dd3fc; }
+
+.drop.slim strong {
+  font-size: 13px;
+  font-weight: 600;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drop.slim span:last-of-type {
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.drop.filled {
+  border-style: solid;
+  border-color: rgba(94, 234, 212, 0.45);
+  background: rgba(94, 234, 212, 0.06);
+}
+
+.drop.filled strong { color: var(--accent); }
+
+.plan {
+  margin: 14px 0 0;
+  padding: 11px 13px;
+  font-size: 12.8px;
+  line-height: 1.75;
+  color: var(--dim);
+  background: rgba(12, 19, 32, 0.6);
+  border: 1px solid #1e2b41;
+  border-radius: 10px;
+}
+
+.plan b { color: var(--text); font-weight: 600; }
+
+.reset {
+  display: block;
+  margin: 10px 0 0 auto;
+  font-size: 12.5px;
+  opacity: 0.75;
+}
+
+.reset:hover { opacity: 1; }
+
+@media (max-width: 640px) {
+  .slots { grid-template-columns: 1fr; }
 }
