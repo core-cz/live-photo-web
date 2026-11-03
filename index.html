@@ -53,9 +53,9 @@
       <button id="reset" class="ghost reset" type="button" hidden>清空两个槽位</button>
 
       <div id="timeRow" class="field" hidden>
-        <div class="label">封面帧位置 <span id="timeValue" class="value">0.5s</span></div>
-        <input id="timeRange" type="range" min="0" max="3" step="0.1" value="0.5" />
-        <div class="hint" style="margin-top:6px">长按播放会从这一帧开始；改它不会改变总时长</div>
+        <div class="label">封面帧位置 <span id="timeValue" class="value">1.5s</span></div>
+        <input id="timeRange" type="range" min="0" max="3" step="0.1" value="1.5" />
+        <div class="hint" style="margin-top:6px">长按播放就从这一帧起播；改它不会改变总时长</div>
       </div>
 
       <div class="field">
@@ -122,7 +122,7 @@
     <h2>它是怎么工作的</h2>
     <ol>
       <li>拖进来如果本身已经是<b>实况照片</b>（JPEG 文件尾挂着 MP4），会把它内嵌的那段视频<b>原样直通</b>——不重编码、不丢音轨、不截时长。其它素材才走转码。</li>
-      <li>在浏览器里用 ffmpeg.wasm 裁片段，封面帧固定落在第 <b>0.5</b> 秒；静态图会补一条静音 AAC，保证和剪映一样是 video+audio 双轨。</li>
+      <li>在浏览器里用 ffmpeg.wasm 裁片段，封面帧默认落在第 <b>1.5</b> 秒（可用滑块调）；静态图会补一条静音 AAC，保证和剪映一样是 video+audio 双轨。</li>
       <li>用 canvas 抓取封面，写入 Apple MakerNote 的 <code>0x0011</code> 与 QuickTime 的 <code>content.identifier</code>，两边共用同一个 UUID。</li>
       <li>把一条真实 Live Photo 的 <code>still-image-time</code> 元数据轨移植进新视频，与封面一起打包成 ZIP。</li>
       <li>Android 侧的结构是从<b>剪映真实产物</b>逐字节比对出来的：<code>Exif → XMP → JFIF → ICC → MPF</code> 的段序、单条目 MPF、以及<b>视频紧贴主图 EOI</b>，一个字节都不能差。EXIF 里干脆不写 <code>Make</code>／<code>Model</code>——写了 <code>Apple</code> 会让相册去找同名 MOV，写了 <code>Google</code> 会让微信把实况开关默认打开却播不出来。</li>

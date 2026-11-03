@@ -1,4 +1,4 @@
-import { buildPlan, generate, detectKind, warmup, STILL_TIME } from "./lib/pipeline.js";
+import { buildPlan, generate, detectKind, warmup } from "./lib/pipeline.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -226,12 +226,13 @@ go.addEventListener("click", async () => {
   setProgress("准备中", 0);
 
   try {
-    const start = timeRow.hidden ? 0 : Math.max(0, Number(timeRange.value) - STILL_TIME);
+    const coverAt = timeRow.hidden ? null : Number(timeRange.value);
     const res = await generate({
       primary: state.a,
       secondary: state.b,
       duration: state.duration,
-      start,
+      start: 0,
+      coverAt,
       onStage: (name, p) => setProgress(name, p),
     });
 

@@ -152,15 +152,70 @@ export function buildAppleExif(w, h, uuid) {
  * 但 **ExifIFD 里的 UserComment 不能删**。它是厂商解析器进「原生动态照片」
  * 分支的钥匙：剪映写含 oplustag 的 JSON，ColorOS 写 oplus_11534336，两者都带 oplus 标记。删掉这一个字段，ColorOS 相册与微信就都认不出来了。
  */
-// 形状照抄剪映：外层 has_cover / oplustag，内层 data 里再带一份 capabilityName。
-// 微信会把这段 UserComment 当 JSON 解析，只看外层 oplustag 不够 ——
-// 它可能顺着 data.oplustag / data.capabilityName 判断「这是不是原厂导出的实况」。
-const OPLUS_USER_COMMENT = `{"data":{"capabilityName":"live_photo_export","effect_id":"live_photo_export","oplustag":8388608,"os":"android","product":"lv","videoParams":{"st":0,"ef":0,"be":0,"tx":0,"mu":0,"ft":0,"te":0,"re":0,"ma":0,"v":0,"me":0,"vs":0,"sp":0}},"has_cover":"0","oplustag":8388608,"source_type":"live_photo_export"}`;
+// 形状照抄剪映 21.8.0 的完整 payload（appVersion / did / uid / videoId / videoParams…），
+// 一个字段都不省。差值实测很敏感：
+//   - `source_type` 剪映写的是 "douyin_beauty_me"，不是 "live_photo_export"。
+//     写成后者时 ColorOS 相册能认、微信直接掉图标 —— 这个字段是厂商分流键。
+//   - `data` 里外各有一份 oplustag，缺一份就会被当成非原厂产物。
+//   - videoId 是 UUID 形状，缺了微信的结构校验不过。
+const hex4 = () => Math.floor(Math.random() * 0x10000).toString(16).padStart(4, "0");
 
-export function buildAndroidExif(w, h) {
+export function oplusVideoId() {
+  return `${hex4()}${hex4()}-${hex4()}-${hex4()}-${hex4()}-${hex4()}${hex4()}${hex4()}`;
+}
+
+/**
+ * 剪映写进 UserComment 与 udta:LvMetaInfo 的是同一段 JSON。
+ * 两处必须完全一致，否则微信会认为容器与 EXIF 描述不符。
+ */
+export function oplusMetaJson(videoId = oplusVideoId()) {
+  return JSON.stringify({
+    data: {
+      appVersion: "21.8.0",
+      capabilityName: "live_photo_export",
+      did: "iqpwrewueeoqtqro",
+      editSource: "",
+      editType: "edit",
+      effect_id: "live_photo_export",
+      effect_type: "tool",
+      enterFrom: "",
+      exportType: "export",
+      extendTemplateId: "",
+      extendTemplateType: 0,
+      firstLaunchMethod: "enter_launch",
+      global_data_for_metadata_write: "",
+      infoStickerId: "",
+      is_ai_template_recreation: 0,
+      launchMode: "launch",
+      lock_cnt_list: "",
+      movie3dTextTemplateId: "",
+      oplustag: 8388608,
+      os: "android",
+      product: "lv",
+      room_id: "",
+      slowMotion: "none",
+      stickerId: "",
+      templateId: "",
+      theme_params: "",
+      transferMethod: "",
+      uid: "uwiewtyewqwyiiqi",
+      videoEffectId: "",
+      videoId,
+      videoParams: {
+        st: 0, ef: 0, be: 0, tx: 0, mu: 0, ft: 0, te: 0, re: 0,
+        ma: 0, v: 0, me: 0, vs: 0, sp: 0,
+      },
+    },
+    has_cover: "0",
+    oplustag: 8388608,
+    source_type: "douyin_beauty_me",
+  });
+}
+
+export function buildAndroidExif(w, h, metaJson = oplusMetaJson()) {
   const exifEntries = [
     SHORT(0x9208, 0),                                              // LightSource
-    BYTES(0x9286, [...enc.encode("ASCII\0\0\0"), ...enc.encode(OPLUS_USER_COMMENT)]),
+    BYTES(0x9286, [...enc.encode("ASCII\0\0\0"), ...enc.encode(metaJson)]),
   ];
 
   let ifd0Entries = [
@@ -311,9 +366,9 @@ export function jpegForIos(jpeg, uuid) {
   return withExif(jpeg, buildAppleExif(w, h, uuid));
 }
 
-export function jpegForAndroid(jpeg) {
+export function jpegForAndroid(jpeg, metaJson) {
   const [w, h] = jpegSize(jpeg);
-  return withExif(jpeg, buildAndroidExif(w, h));
+  return withExif(jpeg, buildAndroidExif(w, h, metaJson));
 }
 
 /** XMP 作为 APP1 紧跟 Exif 段（剪映的段序就是 Exif → XMP → JFIF → ICC → MPF）。 */

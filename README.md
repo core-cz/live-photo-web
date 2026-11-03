@@ -87,7 +87,7 @@
 - 定格帧时间戳要**沿用原片的** `MotionPhotoPresentationTimestampUs`（剪映写 1.5s），
   不能一律按 0.5s 写，否则播放器从错误的帧起播。
 
-## Android 侧的七条硬性要求
+## Android 侧的八条硬性要求
 
 这一节的结论全部来自与「剪映 21.8.0 导出产物」的逐字节比对，而不是文档：
 
@@ -97,7 +97,12 @@
 4. **EXIF 不写 `Make`／`Model`**。写 `Apple` 会进 iOS 配对分支；写 `Google`/`Pixel` 会让微信把它当 Pixel Motion Photo。剪映真实产物这两个字段是空的。
 5. **ftyp 必须是 isom 版式**（`isom` + `iso2` / `<实际编码>` / `mp41`）。HEVC 源就写 `hvc1`，别一律写 `avc1`。ffmpeg 默认的 `qt  ` 单 brand 头会被部分国产相册当成 QuickTime 直接跳过；重建时同步修正 `stco`/`co64` 偏移。
 6. **视频是单轨**（视频 + AAC）。带 `mebx` 元数据轨的多轨结构会让 OPPO 播放器「识别正常但播放失败」，所以 Android 版用注入 UUID 之前的原始片段。
-7. **ExifIFD 里的 `UserComment` 必须保留**，并且要带 `oplus` 标记（剪映写 `{"oplustag":8388608,...}`）。这条是回归验证出来的：一度以为「少即是多」把它删干净，结果 ColorOS 相册和微信双双认不出来。`Make`/`Model` 可以空，`UserComment` 不能。
+7. **ExifIFD 里的 `UserComment` 必须保留**，并且要带 `oplus` 标记（剪映写 `{"oplustag":8388608,...}`）。这条是回归验证出来的：一度以为「少即是多」把它删干净，结果 ColorOS 相册和微信双双认不出来。`Make`/`Model` 可以空，`UserComment` 不能。**`source_type` 必须是 `douyin_beauty_me`**——剪映写的就是这个值，不是 `live_photo_export`；写错时 ColorOS 认、微信掉图标。
+8. **moov 里必须带 `udta → meta(mdta) → keys + ilst`**，七个私有键 `DreaminaMetaInfo / Hw / LvMetaInfo / bitrate / maxrate / te_is_reencode / encoder`，`LvMetaInfo` 的值与 `UserComment` 是同一段 JSON。ffmpeg 重封装会把它换成 33 字节的空 udta（只含 `©swr Lavf…`），所以不能只判断「有没有 udta」，必须判断「有没有 meta」，缺了就合并进去。
+
+## 为什么本机会提示「规格较高」
+
+ColorOS 对实况视频的尺寸有个软上限：剪映导出的是 **480×852**（短边 480）。超过这个尺寸，相册会提示「该实况照片规格较高，播放时可能会卡顿」，然后切到降级播放路径——**画面还能动，声音没了**。所以流水线把短边一律压到 480，用户自己传的 1080p 视频也会重编码到这个尺寸（`libx264 -preset ultrafast -crf 24 -profile:v baseline`）。
 
 ## 目录
 

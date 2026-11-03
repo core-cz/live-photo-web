@@ -14,9 +14,10 @@ import { makeZip } from "./zip.js";
 import { makeCover } from "./cover.js";
 import { extractMotionVideo, hasAudioTrack, isHeic, readMotionTimestamp } from "./embedded.js";
 
-// 封面落在第 0.5 秒 —— 必须和 metadata_tpl.mov 里 still-image-time 样本的
-// 时间点严格对齐，否则 iOS 长按时定格帧会晚 1 秒。
-export const STILL_TIME = 0.5;
+// 封面落到第 1.5 秒 —— 与剪映产物里 `MotionPhotoPresentationTimestampUs=1500000`
+// 完全一致。这个值不是随便写的：播放器点开实况时先显示封面，再从这个时间点
+// 起播视频。封面抽帧点和 XMP 时间戳必须严格对齐，错开就会看到画面「跳一下」。
+export const STILL_TIME = 1.5;
 
 // 单条实况的上限。朋友圈会截短，但微信聊天、系统相册都吃长片，
 // 剪映能导出几十秒，我们没必要自己卡在 3.9 秒。
@@ -168,8 +169,13 @@ function even(n) {
   return Math.max(2, Math.round(n / 2) * 2);
 }
 
-export function targetSize(width, height, maxShort = 1080) {
-  if (!width || !height) return { w: 1080, h: 1920 };
+// 剪映导出的实况视频是 480×852（短边 480）。ColorOS 相册对超过这个尺寸的
+// 实况会提示「该实况照片规格较高，播放时可能会卡顿」，然后切到降级播放路径
+// ——表现就是画面能动、声音没了。所以这里把短边死死卡在 480。
+export const MAX_SHORT_SIDE = 480;
+
+export function targetSize(width, height, maxShort = MAX_SHORT_SIDE) {
+  if (!width || !height) return { w: 480, h: 852 };
   const scale = Math.min(1, maxShort / Math.min(width, height));
   return { w: even(width * scale), h: even(height * scale) };
 }
@@ -271,6 +277,14 @@ async function makeClip(ffmpeg, plan, size, opts, names) {
 
   // 有画面：主素材或副素材里的视频
   if (plan.video) {
+    const vw = plan.videoInfo && plan.videoInfo.width ? plan.videoInfo.width : 0;
+    const vh = plan.videoInfo && plan.videoInfo.height ? plan.videoInfo.height : 0;
+    // 实况原件直通时尺寸通常已经是 480×852，一个字节都别动；
+    // 用户自己传的 1080p 视频必须压下来，否则 ColorOS 会提示「规格较高」并丢掉音轨。
+    const needScale = plan.video.kind === "motion"
+      ? (vw > 0 && Math.min(vw, vh) > MAX_SHORT_SIDE)
+      : (vw === 0 || Math.min(vw, vh) > MAX_SHORT_SIDE);
+
     const args = ["-hide_banner", "-y"];
     if (start > 0.01) args.push("-ss", start.toFixed(3));
     args.push("-i", names.video);
@@ -280,9 +294,18 @@ async function makeClip(ffmpeg, plan, size, opts, names) {
     args.push("-t", String(duration), "-map", "0:v:0");
     args.push("-map", audioIn ? "1:a:0" : (plan.hasOwnAudio ? "0:a:0" : "1:a:0"));
 
-    // 画面原样直通：剪映的 HEVC 我们编不动，也没必要编。
-    // 更重要的是 copy 不会改动视频里的 udta/meta，微信对那类改动很敏感。
-    args.push("-c:v", "copy");
+    if (needScale) {
+      args.push(
+        "-vf", `scale=${w}:${h}:flags=lanczos,setsar=1`,
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24",
+        "-pix_fmt", "yuv420p", "-profile:v", "baseline", "-level", "3.1",
+        "-r", "30",
+      );
+    } else {
+      // 画面原样直通：剪映的 HEVC 我们编不动，也没必要编。
+      // 更重要的是 copy 不会改动视频里的 udta/meta。
+      args.push("-c:v", "copy");
+    }
 
     if (audioIn || !plan.hasOwnAudio) {
       args.push("-c:a", "aac", "-b:a", "128k", "-ac", "2");
@@ -324,12 +347,13 @@ export async function readFileBytes(ffmpeg, name) {
 
 /**
  * @param {{primary: File, secondary?: File|null, duration?: number, start?: number,
- *          onStage?: (name: string, progress?: number) => void}} opts
- *        duration = 0 表示「全长」；start = 封面在片段里的位置（默认 0.5s，即从 0 开始）
+ *          coverAt?: number|null, onStage?: (name: string, progress?: number) => void}} opts
+ *        duration = 0 表示「全长」；start = 从原视频第几秒开始截（默认 0）
+ *        coverAt  = 封面定格在片段里的第几秒，也写进 XMP 的 PresentationTimestamp
  */
 export async function generate(opts) {
   const {
-    primary, secondary = null, duration: want = 0, start = 0,
+    primary, secondary = null, duration: want = 0, start = 0, coverAt = null,
     onStage = () => {},
   } = opts;
 
@@ -385,11 +409,16 @@ export async function generate(opts) {
   onStage("生成封面");
   // 封面来源：照片优先；其次是实况照片自带的静图；最后才是从视频里抽帧
   const stillFromLive = !plan.still && plan.video && plan.video.kind === "motion";
+  // 定格点：用户拖的滑块优先；复用别人的实况时沿用原片写好的时间戳；
+  // 都没有就落在 1.5s（剪映的默认值）。不超过片长的 60%，避免短片抽不到帧。
+  const wantAt = coverAt != null ? coverAt
+    : (plan.video && plan.video.tsUs != null ? plan.video.tsUs / 1e6 : STILL_TIME);
+  const stillPoint = Math.max(0, Math.min(wantAt, Math.max(0.1, duration * 0.6)));
   const cover = await makeCover({
     kind: plan.still || stillFromLive ? "image" : "video",
     file: plan.still || plan.video.file,
     coverFile: null,
-    coverTime: start + STILL_TIME,
+    coverTime: start + stillPoint,
     width: size.w,
     height: size.h,
   });
@@ -401,13 +430,8 @@ export async function generate(opts) {
   const mov = injectLivePhoto(clip, template, uuid);
   const jpg = jpegForIos(cover, uuid);
   // Android 版用未注入 mebx 轨的原始片段：多轨结构会让 OPPO 播放器"识别正常但播放失败"
-  // 复用别人的视频时，静图对应视频里的第几秒是原片写好的，必须沿用它，
-  // 否则播放器会从错误位置起播。
-  const srcTs = plan.video && plan.video.tsUs != null ? plan.video.tsUs / 1e6 : null;
-  const stillAt = srcTs != null
-    ? Math.max(0, Math.min(duration, srcTs - start))
-    : STILL_TIME;
-  const motionPhoto = buildMotionPhoto(cover, clip, Math.round(stillAt * 1e6));
+  const motionPhoto = buildMotionPhoto(cover, clip, Math.round(stillPoint * 1e6));
+  const stillAt = stillPoint;
 
   onStage("打包");
   const iosZip = makeZip([

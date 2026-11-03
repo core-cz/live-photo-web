@@ -20,7 +20,10 @@
 // 3. 不要写 Make/Model。写 "Apple" 会进 iOS 配对分支；写 "Google"/"Pixel"
 //    会让微信把它当 Pixel Motion Photo，实况开关默认打开。真实剪映产物这两个字段是空的。
 
-import { concat, insertAppAfterExif, insertApp2, jpegForAndroid, lastAppAnyEnd } from "./exif.js";
+import {
+  concat, insertAppAfterExif, insertApp2, jpegForAndroid, lastAppAnyEnd,
+  oplusMetaJson, oplusVideoId,
+} from "./exif.js";
 import { CONTAINERS, fourcc, readBoxes, u32 } from "./box.js";
 
 const enc = new TextEncoder();
@@ -196,16 +199,163 @@ function shiftChunks(out, from, delta) {
   });
 }
 
+// ---------------------------------------------------------------- moov/udta
+
+/**
+ * 剪映产物的 moov 尾部有一段 `udta → meta(mdta) → keys + ilst`，七个私有键：
+ *
+ *   DreaminaMetaInfo = {}          Hw = "1"           LvMetaInfo = {UserComment 同款 JSON}
+ *   bitrate = "6000000"            maxrate = "30000000"
+ *   te_is_reencode = "1"           encoder = "Lavf57.71.100"
+ *
+ * 这段东西是 ffmpeg 重封装时第一个被丢掉的部分，也正好是「ColorOS 相册认、
+ * 微博认、微信不认」分叉的地方：微信走的是 OPPO 原厂解析器，它要求 moov 里
+ * 带着这份原厂自述。缺了不是降级，是直接判成「格式不全」。
+ */
+const UDTA_KEYS = [
+  "DreaminaMetaInfo", "Hw", "LvMetaInfo", "bitrate",
+  "maxrate", "te_is_reencode", "encoder",
+];
+
+function w32(b, o, v) {
+  b[o] = (v >>> 24) & 0xff;
+  b[o + 1] = (v >>> 16) & 0xff;
+  b[o + 2] = (v >>> 8) & 0xff;
+  b[o + 3] = v & 0xff;
+}
+
+function mkBox(type, ...parts) {
+  const body = concat(parts);
+  const out = new Uint8Array(8 + body.length);
+  w32(out, 0, out.length);
+  for (let i = 0; i < 4; i += 1) out[4 + i] = type.charCodeAt(i);
+  out.set(body, 8);
+  return out;
+}
+
+/** hdlr 33 字节：ver/flags(4) + pre_defined(4) + 'mdta'(4) + reserved(12) + name(1) */
+function mdtaHdlr() {
+  const body = new Uint8Array(25);
+  body.set(enc.encode("mdta"), 8);
+  return mkBox("hdlr", body);
+}
+
+function keysBox(names) {
+  const parts = [];
+  for (const n of names) {
+    const raw = enc.encode(n);
+    const b = new Uint8Array(8 + raw.length);
+    w32(b, 0, b.length);
+    b.set(enc.encode("mdta"), 4);
+    b.set(raw, 8);
+    parts.push(b);
+  }
+  const head = new Uint8Array(8);
+  w32(head, 4, names.length);
+  return mkBox("keys", head, ...parts);
+}
+
+/** ilst 单条：size + index(4) + [size + 'data' + type(4,=1 UTF-8) + locale(4) + utf8] */
+function ilstEntry(index, text) {
+  const val = enc.encode(text);
+  const data = new Uint8Array(16 + val.length);
+  w32(data, 0, data.length);
+  data.set(enc.encode("data"), 4);
+  w32(data, 8, 1);
+  w32(data, 12, 0);
+  data.set(val, 16);
+
+  const out = new Uint8Array(8 + data.length);
+  w32(out, 0, out.length);
+  w32(out, 4, index);
+  out.set(data, 8);
+  return out;
+}
+
+function buildMeta({ metaJson }) {
+  const values = [
+    "{}",                                  // DreaminaMetaInfo
+    "1",                                   // Hw
+    metaJson,                              // LvMetaInfo
+    "6000000",                             // bitrate
+    "30000000",                            // maxrate
+    "1",                                   // te_is_reencode
+    "Lavf59.37.100",                       // encoder
+  ];
+  const ilst = mkBox("ilst", ...values.map((v, i) => ilstEntry(i + 1, v)));
+  return mkBox("meta", new Uint8Array(4), mdtaHdlr(), keysBox(UDTA_KEYS), ilst);
+}
+
+/**
+ * 在 moov 里补 udta/meta。
+ *
+ * 注意不能只判断「有没有 udta」：ffmpeg 自己会写一个 33 字节的空 udta（只含
+ * `©swr Lavf59.27.100`），直接跳过就等于什么都没做 —— 这正是上一版微信掉图标
+ * 的原因。正确做法是把原 udta 里的其他子盒保留下来，再把 meta 拼进去。
+ *
+ * moov 在 mdat 之后是最常见布局，此时改动不影响任何 chunk 偏移；
+ * 万一 moov 在前（faststart），后面整体后移，必须同步修 stco/co64。
+ */
+export function injectUdta(mp4, opts = {}) {
+  const boxes = readBoxes(mp4, 0, mp4.length);
+  const moov = boxes.find((b) => b.type === "moov");
+  if (!moov) return mp4;
+
+  const kids = readBoxes(mp4, moov.dataOffset, moov.offset + moov.size);
+  const existing = kids.find((b) => b.type === "udta");
+
+  let keep = [];
+  if (existing) {
+    const inner = readBoxes(mp4, existing.dataOffset, existing.offset + existing.size);
+    // 已经有 mdta/meta 说明是剪映原件直通，一个字节都别碰
+    if (inner.some((b) => b.type === "meta")) return mp4;
+    keep = inner.map((b) => mp4.subarray(b.offset, b.offset + b.size));
+  }
+
+  const udta = mkBox("udta", ...keep, buildMeta(opts));
+  const insertAt = existing ? existing.offset : moov.offset + moov.size;
+  const removeLen = existing ? existing.size : 0;
+
+  const moovBody = concat([
+    mp4.subarray(moov.dataOffset, insertAt),
+    udta,
+    mp4.subarray(insertAt + removeLen, moov.offset + moov.size),
+  ]);
+  const newMoov = new Uint8Array(8 + moovBody.length);
+  w32(newMoov, 0, newMoov.length);
+  for (let i = 0; i < 4; i += 1) newMoov[4 + i] = "moov".charCodeAt(i);
+  newMoov.set(moovBody, 8);
+
+  const out = concat([
+    mp4.subarray(0, moov.offset),
+    newMoov,
+    mp4.subarray(moov.offset + moov.size),
+  ]);
+
+  const delta = newMoov.length - moov.size;
+  if (delta !== 0 && boxes.some((b) => b.type === "mdat" && b.offset > moov.offset)) {
+    shiftChunks(out, moov.offset + newMoov.length, delta);
+  }
+  return out;
+}
+
 /**
  * @param {Uint8Array} jpeg  封面图（会被替换 EXIF，去 Apple 化、去 Make/Model）
  * @param {Uint8Array} video MP4
  * @param {number} tsUs      封面时间戳（微秒），剪映固定写 1500000
  */
 export function buildMotionPhoto(jpeg, video, tsUs = 1500000) {
-  const v = canonicalFtyp(video);
+  const videoId = oplusVideoId();
+  const metaJson = oplusMetaJson(videoId);
+
+  // 0. 视频容器补 udta/meta —— 剪映产物 moov 尾部有一段 1265 字节私有元数据，
+  //    重封装（ffmpeg 一定丢）之后微信就认不出来。这里按原样写回去。
+  let v = injectUdta(video, { metaJson });
+
+  v = canonicalFtyp(v);
 
   // 1. EXIF 极简化：只留 宽/高/Orientation，不带 Make / Model
-  let out = jpegForAndroid(jpeg);
+  let out = jpegForAndroid(jpeg, metaJson);
 
   // 2. XMP 紧跟 Exif 段（与剪映的段序一致）
   const xmp = enc.encode(XMP_HEADER + XMP(tsUs, v.length));
