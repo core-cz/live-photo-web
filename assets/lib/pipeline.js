@@ -409,6 +409,12 @@ export async function generate(opts) {
   onStage("生成封面");
   // 封面来源：照片优先；其次是实况照片自带的静图；最后才是从视频里抽帧
   const stillFromLive = !plan.still && plan.video && plan.video.kind === "motion";
+  // 封面可以比视频大：剪映产物就是 720×1280 的封面配 480×852 的视频。
+  // 视频卡在 480 是为了让相册走流畅播放路径，封面不必跟着降。
+  // 但**比例必须和视频严格一致**，否则播放器在封面与首帧之间切换时会看到拉伸，
+  // 有些机型据此判定「封面与视频不匹配」直接不认。
+  const coverScale = 720 / Math.min(size.w, size.h);
+  const coverSize = { w: even(size.w * coverScale), h: even(size.h * coverScale) };
   // 定格点：用户拖的滑块优先；复用别人的实况时沿用原片写好的时间戳；
   // 都没有就落在 1.5s（剪映的默认值）。不超过片长的 60%，避免短片抽不到帧。
   const wantAt = coverAt != null ? coverAt
@@ -419,8 +425,8 @@ export async function generate(opts) {
     file: plan.still || plan.video.file,
     coverFile: null,
     coverTime: start + stillPoint,
-    width: size.w,
-    height: size.h,
+    width: coverSize.w,
+    height: coverSize.h,
   });
 
   onStage("写入实况元数据");
