@@ -307,9 +307,12 @@ export function injectUdta(mp4, opts = {}) {
   let keep = [];
   if (existing) {
     const inner = readBoxes(mp4, existing.dataOffset, existing.offset + existing.size);
-    // 已经有 mdta/meta 说明是剪映原件直通，一个字节都别碰
-    if (inner.some((b) => b.type === "meta")) return mp4;
-    keep = inner.map((b) => mp4.subarray(b.offset, b.offset + b.size));
+    // ffmpeg 6.x 会写一个 handler 为 `mdirappl` 的 iTunes meta（含 ©too），那不是我们的。
+    // 只有 handler == mdta 才是已经注入过的剪映式元数据，可以原样放过。
+    const ours = inner.some((b) => b.type === "meta" && fourcc(mp4, b.offset + 28) === "mdta");
+    if (ours) return mp4;
+    keep = inner.filter((b) => b.type !== "meta")
+      .map((b) => mp4.subarray(b.offset, b.offset + b.size));
   }
 
   const udta = mkBox("udta", ...keep, buildMeta(opts));
@@ -334,7 +337,9 @@ export function injectUdta(mp4, opts = {}) {
 
   const delta = newMoov.length - moov.size;
   if (delta !== 0 && boxes.some((b) => b.type === "mdat" && b.offset > moov.offset)) {
-    shiftChunks(out, moov.offset + newMoov.length, delta);
+    // stco/co64 存的是绝对文件偏移。moov 在 mdat 之前（faststart）时，
+    // 插入 udta 会把后面的 mdat 整体后移，必须从新 moov 内部开始修。
+    shiftChunks(out, moov.offset, delta);
   }
   return out;
 }
